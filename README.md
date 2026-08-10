@@ -1,7 +1,52 @@
-# Wanix
-[![Discord](https://img.shields.io/discord/415940907729420288?label=Discord)](https://discord.gg/nQbgRjEBU4) ![GitHub Sponsors](https://img.shields.io/github/sponsors/progrium?label=Sponsors)
+# Halatha
 
-Wanix is an embeddable runtime that brings a Unix-like environment to the browser. Declare a `<wanix-namespace>`, bind files and archives into it, run Wasm and JavaScript tasks, boot Linux in an x86 emulator, and wire up terminals and a VS Code workbench, all from HTML.
+Halatha is a browser-native compute runtime that brings a Unix — and now
+Plan 9 — environment to the web. It is a significantly divergent fork of
+[Wanix](https://github.com/tractordev/wanix): it keeps Wanix's embeddable
+namespace runtime (the `<wanix-namespace>` HTML elements, Wasm/JavaScript
+tasks, and v86 virtualization) and builds on it a deep, native
+Plan 9 / 9legacy guest integration that stock Wanix does not have.
+
+## How Halatha differs from stock Wanix
+
+Stock Wanix boots Linux in v86 and bridges the guest to the host over a
+per-byte serial 9P channel. Halatha replaces and extends that:
+
+- **Plan 9 / 9legacy as first-class guests.** Boot 9front or 9legacy
+  (Bell Labs 4th-edition 386) from whole-disk images into a VGA/rio display
+  — not just Linux. The guest kernel lives on the image, so no host
+  `bzImage` or host9p root is used. (`examples/basic-vm-9front.html`,
+  `examples/basic-vm-9legacy.html`)
+- **virtio-9p host bridge.** A guest-kernel `devvirtio9p` driver (`#9`)
+  gives the 9legacy guest a message-granular, plain-9P2000 mount of the
+  host namespace at `/n/host` — replacing Wanix's slow per-byte serial 9P
+  bridge. Host files appear as a native 9P tree inside the guest.
+- **Go 9P file server (`fs/p9p`).** A 9P file server in Go that serves the
+  wanix kernel namespace to the guest across the virtio-9p transport.
+- **WebUSB through the guest USB stack.** A software-only USB
+  host-controller-interface driver (`usbns`) in the 9legacy kernel
+  registers a root hub with `devusb`, so the stock `usbd` and the
+  unmodified `usb/disk`, `usb/serial`, and `usb/ether` class drivers come
+  up at boot and forward transfers to the browser's WebUSB bridge. Stock
+  Wanix has no USB story at all.
+- **9legacy image builder (`extras/9front/mk9legacyimg`).** A Go tool that
+  assembles the guest images: patches the gzroot, installs the virtio-9p
+  entries and the USB userland, layers guest tools and the troff/hyphen
+  fix, grows the gzroot, and writes PLAN9.INI — producing the 16 MB base
+  and 40 MB rich (troff / ygg / o9 / halctl / C toolchain) production
+  images.
+- **halatha guest extras (`extras/halatha`).** `halctl` and supporting
+  guest tooling.
+
+The sections below document the Wanix embeddable runtime, carried forward
+essentially unchanged as Halatha's base.
+
+## Wanix runtime
+
+Wanix is an embeddable runtime that brings a Unix-like environment to the
+browser. Declare a `<wanix-namespace>`, bind files and archives into it,
+run Wasm and JavaScript tasks, boot Linux or Plan 9 in an x86 emulator,
+and wire up terminals and a VS Code workbench, all from HTML.
 
 ```html
 <wanix-namespace>
@@ -13,11 +58,75 @@ Wanix is an embeddable runtime that brings a Unix-like environment to the browse
 
 - **Everything is a file.** Processes, terminals, VMs, browser APIs, and storage are exposed through a unified namespace you compose with binds. The same idea as Plan 9, with improvements, in the browser.
 - **Composable environments.** Layer tar archives, fetch remote files, write inline scripts, and union directories to build exactly the filesystem your app needs.
-- **Pluggable compute.** Run Go/TinyGo (`gojs`), WASI Wasm, JavaScript workers, and x86 Linux (via v86) as tasks in the same namespace.
+- **Pluggable compute.** Run Go/TinyGo (`gojs`), WASI Wasm, JavaScript workers, and x86 Linux or Plan 9 (via v86) as tasks in the same namespace.
 - **Isolation by design.** Each task gets its own namespace. VMs export a guest namespace. Import remote namespaces over 9P.
 - **Browser-native integration.** OPFS persistence, DOM control, web workers, service workers, and fetch are first-class via the `#web` namespace.
 - **No backend required.** The runtime (`wanix.min.js` + `wanix.wasm`) runs entirely client-side. Host static assets on any CDN.
-- **Progressive complexity.** Start with a single Wasm binary and terminal. Add Linux VMs, a full IDE workbench, or cross-origin federation when you need them.
+- **Progressive complexity.** Start with a single Wasm binary and terminal. Add Linux or Plan 9 VMs, a full IDE workbench, or cross-origin federation when you need them.
+
+## Plan 9 / 9legacy guests
+
+### Boot 9front in v86
+
+Boot the 386 build of 9front to a VGA/rio display instead of Linux. 9front
+boots from a whole-disk image (its own kernel lives on the image), so no
+`bzImage` or host9p root is used — `acpi` is required (9front needs it under
+v86) and the `screen` attribute gives the VM a VGA canvas:
+
+```html
+<wanix-namespace>
+  <wanix-bind dst="#vm/v86" type="archive"
+    src="https://cdn.jsdelivr.net/npm/wanix-extras@0.4.0-rc2/dist/v86.tgz">
+  </wanix-bind>
+  <!-- hda: a CORS-enabled, Range-capable URL for the 9front 386 disk image -->
+  <wanix-vm hda="https://example.com/9front-386.iso"
+    acpi boot="c" mem="128M" screen start
+    style="width: 100%; height: 100%;"></wanix-vm>
+</wanix-namespace>
+```
+
+See [examples/basic-vm-9front.html](examples/basic-vm-9front.html).
+
+### Boot 9legacy with the virtio-9p host bridge
+
+9legacy boots the same way, and with the virtio-9p kernel built in it
+mounts the host namespace at `/n/host` over a kernel `#9` device — so the
+guest can read and write host files as a native 9P tree:
+
+```html
+<wanix-namespace>
+  <wanix-bind dst="#vm/v86" type="archive"
+    src="https://cdn.jsdelivr.net/npm/wanix-extras@0.4.0-rc2/dist/v86.tgz">
+  </wanix-bind>
+  <wanix-vm hda="https://example.com/9legacy-wanix-virtio9p-full-usb.img"
+    acpi boot="c" mem="128M" screen start
+    style="width: 100%; height: 100%;"></wanix-vm>
+</wanix-namespace>
+```
+
+The rich image (`9legacy-wanix-virtio9p-full-usb.img`) carries the
+virtio-9p driver, the USB userland, and the `usbns` HCI in its kernel, and
+boots `usbd` automatically. See
+[examples/basic-vm-9legacy.html](examples/basic-vm-9legacy.html) and the
+direct page
+[examples/basic-v86-9legacy-direct.html](examples/basic-v86-9legacy-direct.html).
+
+### WebUSB devices through `usbns`
+
+With the `usbns`-enabled image, the guest's stock USB stack is alive at
+boot (`/srv/usb` is posted, a root hub exists under `/dev/usb`, and there
+is no `usbd: /dev/usb: no hubs`). Open a USB device from the page (the
+`wusb` wrapper or the page picker claims it via the browser WebUSB API),
+and the unmodified class drivers attach:
+
+- `usb/disk` mounts a mass-storage stick in the guest.
+- `usb/serial` exposes a CDC-ACM device as `/dev/eiaN`.
+- `usb/ether` brings up a USB Ethernet adapter.
+
+Transfers flow guest `devusb` → `usbns` HCI → 9P files under
+`/n/host/usb/<id>/{req,resp}` → the page's WebUSB bridge. No guest-side
+driver code was written for the bridge; the native Plan 9 USB stack drives
+real browser-claimed devices.
 
 ## Use Cases
 
@@ -25,7 +134,7 @@ Wanix is an embeddable runtime that brings a Unix-like environment to the browse
 - **Interactive demos and tutorials**: embed reproducible sandboxes in docs, blog posts, and courseware.
 - **Local-first apps**: persist user data in OPFS, run logic in workers, and build your own platform.
 - **Agent sandboxes**: utilize browser sandboxing to isolate an agent environment you construct.
-- **Personal compute**: build your own computing environment / operating system.
+- **Personal compute**: build your own computing environment / operating system — Halatha's Plan 9 guests make a real Plan 9 desktop runnable from a static web page.
 
 ## Quick Start (CDN)
 
@@ -44,7 +153,7 @@ Wanix is an embeddable runtime that brings a Unix-like environment to the browse
     <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
     <!-- bind inline file into namespace -->
     <wanix-bind type="file" dst="hello.sh" perm="0755">
-      echo "Hello from Wanix!"
+      echo "Hello from Halatha!"
     </wanix-bind>
     <!-- bind wasm executable from url -->
     <wanix-bind type="file" dst="rc.wasm"
@@ -408,6 +517,26 @@ See [examples/import-workbench.html](examples/import-workbench.html).
 See all [examples](examples).
 
 
+## Building the 9legacy guest images
+
+The Plan 9 guest images are produced by the Go image builder in
+`extras/9front`:
+
+```sh
+# rich image: virtio-9p + serial console + USB userland + usbd at boot
+go run ./extras/9front/mk9legacyimg.go \
+  -base local/9legacy-wanix-virtio9p-full.img \
+  -out local/9legacy-wanix-virtio9p-full-usb.img \
+  -virtio9p -keep-serial-console -usb-boot \
+  -addtree /tmp/usb-bin:/386/bin/usb
+```
+
+`-usb-boot` sets `wanixusb=1` in PLAN9.INI so the guest's termrc runs
+`usbstart` (and thus `usbd`) at boot. See
+[extras/9front/README.md](extras/9front/README.md) for the full flag
+reference and the kernel build flow.
+
+
 ## Local Development
 
 ```sh
@@ -423,21 +552,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full build guide.
 
 ## Contributing
 
-We'd love your contributions! Take a look at our [issues](https://github.com/tractordev/wanix/issues) to see how you can help out. You can also ask questions and participate in [discussions](https://github.com/tractordev/wanix/discussions), however right now most discussion takes place in our [Discord](https://discord.gg/nQbgRjEBU4).
-
-Be sure to read our [CONTRIBUTING.md](CONTRIBUTING.md) doc to get started.
+Halatha is developed at [kiljoy001/halatha](https://github.com/kiljoy001/halatha).
+It tracks upstream [tractordev/wanix](https://github.com/tractordev/wanix) and
+contributes the Plan 9 / 9legacy integration layer. Issues and pull requests
+are welcome on the Halatha repo.
 
 ## AI Disclosure
 
-There are components of Wanix that have been written with AI assistance. 
-However, we will not accept "vibe coded" PRs, which is to say a human needs to 
-know how the PR works and be responsible for it.
-
-## Older Demos
-
-* [📺 2025 Wanix 0.3 Preview Demo](https://www.youtube.com/watch?v=kGBeT8lwbo0)
-* [📺 2024 Wasm I/O Demo](https://www.youtube.com/watch?v=cj8FvNM14T4)
-* [📺 2023 Mozilla Rise Demo](https://www.youtube.com/watch?v=KJcd9IckJj8)
+Parts of Halatha — particularly the Plan 9 integration layer (the `usbns`
+kernel HCI driver, the `devvirtio9p` bridge, the image builder, and the
+9legacy userland build flow) — were developed with AI assistance. A human
+designs, verifies, and is responsible for every change.
 
 ## License
 
