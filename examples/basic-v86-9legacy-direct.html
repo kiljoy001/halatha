@@ -1,0 +1,1064 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>direct-v86-9legacy</title>
+    <!-- wanix kernel: provides the 9P namespace + Go fs/p9p server the guest
+         mounts. v86 itself runs bare below (no wanix task wrapper), so boot
+         stays fast; the kernel is only used for what it's good at. -->
+    <script type="module" src="/dist/wanix.min.js?v=host9p-go"></script>
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #111;
+            color: #ddd;
+            font: 13px system-ui, sans-serif;
+        }
+
+        #screen_container {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+        }
+
+        #screen_container.pointer-locked {
+            cursor: none;
+        }
+
+        #screen_container canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #screen_container > div {
+            white-space: pre;
+            font: 14px monospace;
+        }
+
+        #status {
+            position: fixed;
+            left: 10px;
+            bottom: 10px;
+            padding: 6px 8px;
+            background: rgba(0, 0, 0, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
+            pointer-events: none;
+        }
+
+        #downloads {
+            position: fixed;
+            right: 10px;
+            bottom: 10px;
+            display: grid;
+            gap: 6px;
+        }
+
+        #downloads a {
+            color: #e8f1ff;
+            background: rgba(0, 0, 0, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
+            padding: 6px 8px;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="screen_container">
+        <div></div>
+        <canvas></canvas>
+    </div>
+    <div id="status">loading v86</div>
+    <div id="downloads"></div>
+
+    <!-- wanix namespace served to the guest over 9P. The Go fs/p9p server
+         (knusbaum/go9p) serves this tree; the guest reaches the browser through
+         these text files: fetch/ctl+fetch/body (HTTP via browser fetch),
+         clip/text (clipboard), downloads/, net/status, uploads/, app/ctl. -->
+    <wanix-namespace id="host" debug>
+        <!-- Bind a writable ramfs at the namespace root first. The literal
+             type="file" binds below (READY, clip/text, fetch/ctl, ...) write
+             into this ramfs; without it, Create on the root mount table fails
+             with "operation not supported on *vfs.NS from *vfs.NS" and the
+             kernel exits. Mirrors the outer namespace bind in the
+             basic-vm-9legacy wrapper. -->
+        <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="clip" src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="downloads" src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="fetch" src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="net" src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="uploads" src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="app" src="#ramfs/new"></wanix-bind>
+        <!-- WebUSB bridge: the 9legacy kernel has the full USB stack
+             (usbuhci/usbohci/usbehci + usbd) but v86 emulates no USB host
+             controller, so /dev/usb has no hubs and usbd dies at boot. This
+             side-steps the kernel stack entirely: a page-side service wraps
+             the browser WebUSB API behind 9P control files so the guest can
+             talk to real USB devices as files under /n/host/usb/. WebUSB needs
+             a user gesture + the main thread, so -- like the file picker --
+             this service is page-side, not a wanix task. Chrome/Edge only. -->
+        <wanix-bind dst="usb" src="#ramfs/new"></wanix-bind>
+
+        <wanix-bind dst="READY" type="file" perm="0666">READY
+</wanix-bind>
+        <wanix-bind dst="clip/text" type="file" perm="0666">browser clipboard bridge ready
+</wanix-bind>
+        <wanix-bind dst="fetch/ctl" type="file" perm="0666"></wanix-bind>
+        <wanix-bind dst="fetch/body" type="file" perm="0666">write a URL to fetch/ctl
+</wanix-bind>
+        <wanix-bind dst="net/status" type="file" perm="0666">wanix direct namespace up
+</wanix-bind>
+        <wanix-bind dst="uploads/upload.txt" type="file" perm="0666">uploaded through wanix direct service
+</wanix-bind>
+        <wanix-bind dst="app/ctl" type="file" perm="0666"></wanix-bind>
+        <wanix-bind dst="usb/ctl" type="file" perm="0666"></wanix-bind>
+        <wanix-bind dst="usb/devices" type="file" perm="0666"></wanix-bind>
+    </wanix-namespace>
+
+    <script type="module">
+        // v86's run loop selects a Node `yield` branch when a global `process`
+        // is present in the page (some scripts/extensions inject one). That
+        // branch references the Node-only `global` and `setImmediate`, which
+        // browsers lack, so `new V86()` throws `global is not defined` and the
+        // guest never boots. Provide browser shims so the Node branch works
+        // here too. (v86's own worker blob does the equivalent with
+        // `var process = undefined`; we shim instead so anything else reading
+        // `process` is unaffected.) Must run before either v86 runtime loads.
+        if (typeof global === "undefined") { window.global = globalThis; }
+        if (typeof setImmediate === "undefined") {
+            window.setImmediate = (fn, ...args) => setTimeout(() => fn(...args), 0);
+        }
+
+        const enc = new TextEncoder();
+        const dec = new TextDecoder();
+        const params = new URLSearchParams(location.search);
+        // Runtime: the virtio-9p transport REQUIRES the MMIO-capable v86 build
+        // (v86/lib/libv86.mjs + v86/bundle/v86.wasm -- 48 `>>>0` BAR coercions
+        // -> MEM BARs the 9legacy devvirtio9p driver accepts). The copysh prebuilt
+        // (local/copysh-v86/build, an older v86) presents I/O BARs, which the
+        // guest rejects (matchvirtiocfgcap: bar&3 != 0) -> no #9 device ->
+        // `mount -c '#9/0' /n/host` fails ("file does not exist"). So default to
+        // "local" for virtio-9p; keep "copysh" for the serial transport (which
+        // doesn't need MMIO). An explicit ?runtime=local|copysh always wins.
+        const _runtimeParam = params.get("runtime");
+        const runtime = _runtimeParam === "local" || _runtimeParam === "copysh"
+            ? _runtimeParam
+            : (params.get("host9pTransport") === "serial" ? "copysh" : "local");
+        const imageParam = params.get("image") || "original";
+        const imageName = imageParam === "halatha"
+            ? "9legacy-wanix-ygg-o9-halatha.img"
+            : imageParam === "patched"
+            ? "9legacy-wanix.img"
+            : imageParam === "ygg"
+                ? "9legacy-wanix-ygg.img"
+                : /^[A-Za-z0-9._-]+\.img$/.test(imageParam)
+                    ? imageParam
+                    : "9legacy-copysh.img";
+        const defaultDiskSize = imageName === "9legacy-wanix-virtio9p-full.img"
+            ? 40894464
+            : imageName === "9legacy-wanix-ygg.img" ||
+              imageName === "9legacy-wanix-ygg-o9-halatha.img"
+            ? 32505856
+            : 16000000;
+        const diskSize = Number(params.get("size") || defaultDiskSize);
+        const menuChoice = params.has("choice") ? params.get("choice") : "1";
+        const menuDelay = Number(params.get("menuDelay") || 3000);
+        const asyncDisk = params.get("async") === "1";
+        const imageVersion = params.get("imgv") || "serial1";
+        const netMode = params.get("net") === "none" ? "none" : "ne2k";
+        // Default to v86's browser "fetch" network backend (same as the
+        // basic-vm-9legacy wrapper) so the guest gets DHCP and reaches rio
+        // without waiting on an external relay. Override with ?relay=wisp://…
+        // (WISP WebSocket->TCP relay, for the grid/Yggdrasil path) or
+        // ?net=none (no NIC, fastest boot for testing the serial 9P mount).
+        const relayURL = netMode === "none" || params.get("relay") === "none"
+            ? undefined
+            : params.get("relay") || "fetch";
+        const host9pDefault = imageName.includes("wanix") || imageName.includes("halatha");
+        const host9p = params.has("host9p") ? params.get("host9p") !== "0" : host9pDefault;
+        const host9pSerial = params.get("host9pSerial") || "1";
+        const debug9p = params.has("debug9p");
+        const status = document.getElementById("status");
+        const downloads = document.getElementById("downloads");
+        const screenContainer = document.getElementById("screen_container");
+        const host = document.getElementById("host");
+        const mib = (bytes) => (bytes / 1024 / 1024).toFixed(1) + " MiB";
+        const V86 = runtime === "copysh"
+            ? await loadCopyshRuntime()
+            : (await import("../v86/lib/libv86.mjs")).V86;
+        const paths = runtime === "copysh" ? {
+            wasm: "../local/copysh-v86/build/v86.wasm",
+            bios: "../local/copysh-v86/bios/seabios.bin",
+            vgaBios: "../local/copysh-v86/bios/vgabios.bin",
+        } : {
+            wasm: "../v86/bundle/v86.wasm",
+            bios: "../v86/bundle/seabios.bin",
+            vgaBios: "../v86/bundle/vgabios.bin",
+        };
+
+        // --- 9P transport selection ---
+        // virtio-9p (default): v86's Virtio9pHandler (v86 lib/9p.js) is a raw
+        // 9P frame relay. We give it a handle_fn that bridges each guest 9P
+        // request to the Go fs/p9p server's MessagePort (kernel._open9P2000),
+        // routing replies back by tag. This is message-granular (one virtqueue
+        // chain + IRQ per 9P RPC) vs the serial path's one IRQ per byte, so it
+        // removes the per-byte IRQ contention that stuttered the VGA render
+        // loop during file I/O. The guest speaks plain 9P2000 over #9
+        // (devvirtio9p with its 9P2000.u shim stripped); fs/p9p speaks plain
+        // 9P2000, so no translation is needed on either side.
+        // serial (legacy, ?host9pTransport=serial): the byte-stream UART relay
+        // kept as a fallback while the virtio-9p guest kernel is being built.
+        const host9pTransport = params.get("host9pTransport") === "serial" ? "serial" : "virtio";
+        let p9port = null;                 // late-bound in startHostBridge
+        const p9pending = new Map();       // tag -> reply_cb (in-flight RPCs)
+        const p9queued = [];               // reqbufs posted before p9port was ready
+        function handle9p(reqbuf, reply_cb) {
+            // reqbuf is the whole 9P frame: size[4] type[1] tag[2] body...
+            const tag = reqbuf[5] | (reqbuf[6] << 8);
+            p9pending.set(tag, reply_cb);
+            if (debug9p) {
+                console.log(`9P -> host (${reqbuf.length}B type ${reqbuf[4]} tag ${tag})`);
+            }
+            if (p9port) {
+                p9port.postMessage(reqbuf);
+            } else {
+                p9queued.push(reqbuf);
+            }
+        }
+
+        const config = {
+            screen: {
+                container: screenContainer,
+                use_graphical_text: false,
+            },
+            bios: {
+                url: paths.bios,
+            },
+            vga_bios: {
+                url: paths.vgaBios,
+            },
+            wasm_path: paths.wasm,
+            memory_size: 512 * 1024 * 1024,
+            vga_memory_size: 8 * 1024 * 1024,
+            hda: {
+                url: `../local/${imageName}?v=${encodeURIComponent(imageVersion)}`,
+                size: diskSize,
+                async: asyncDisk,
+            },
+            filesystem: host9p && host9pTransport === "virtio"
+                ? { handle9p }
+                : {},
+            disable_speaker: true,
+            autostart: true,
+        };
+        // UART 9P plumbing is only needed for the legacy serial transport;
+        // the virtio-9p path uses a PCI device, no UART.
+        if (host9p && host9pTransport === "serial") {
+            if (host9pSerial === "1") {
+                config.uart1 = true;
+            } else if (host9pSerial === "2") {
+                config.uart2 = true;
+            } else if (host9pSerial === "3") {
+                config.uart3 = true;
+            }
+        }
+        config.net_device = netMode === "none"
+            ? { type: "none" }
+            : {
+                type: "ne2k",
+                relay_url: relayURL,
+            };
+
+        const emulator = new V86(config);
+
+        // The wanix namespace boots async; once ready, wire the Go 9P server to
+        // the guest's serial port and start the browser-backed services.
+        host.addEventListener("ready", () => {
+            startHostBridge().catch((err) => {
+                console.error("host bridge:", err);
+                status.textContent = "host namespace failed";
+            });
+        });
+
+        emulator.add_listener("download-progress", (progress) => {
+            const total = progress.total || 0;
+            const loaded = progress.loaded || 0;
+            const name = progress.file_name || "asset";
+            status.textContent = total
+                ? `${name}: ${mib(loaded)} / ${mib(total)}`
+                : `${name}: ${mib(loaded)}`;
+        });
+
+        emulator.add_listener("download-error", (event) => {
+            const name = event.file_name || "asset";
+            const request = event.request;
+            status.textContent = `download failed: ${name} (${request && request.status})`;
+        });
+
+        let menuSelectionSent = false;
+        emulator.add_listener("emulator-ready", () => {
+            if (menuChoice === "manual" || menuChoice === "none") {
+                status.textContent = "9legacy boot menu";
+                return;
+            }
+            status.textContent = `emulator ready; selecting menu ${menuChoice}`;
+            setTimeout(() => {
+                if (menuSelectionSent) {
+                    return;
+                }
+                menuSelectionSent = true;
+                emulator.keyboard_send_text(`${menuChoice}\n`);
+                status.textContent = "9legacy booting";
+            }, menuDelay);
+        });
+
+        emulator.add_listener("emulator-loaded", () => {
+            if (!menuSelectionSent) {
+                status.textContent = menuChoice === "manual" || menuChoice === "none"
+                    ? "9legacy loaded; waiting for menu input"
+                    : `9legacy loaded; selecting menu ${menuChoice}`;
+            }
+        });
+
+        screenContainer.addEventListener("click", () => {
+            if (!document.pointerLockElement) {
+                emulator.lock_mouse();
+            }
+        });
+
+        document.addEventListener("pointerlockchange", () => {
+            screenContainer.classList.toggle("pointer-locked", !!document.pointerLockElement);
+        });
+
+        window.emulator = emulator;
+
+        // --- wanix host bridge: Go fs/p9p server + browser services ---
+
+        async function startHostBridge() {
+            const kernel = host._kernel;
+            const root = kernel.root;
+
+            if (host9p) {
+                // _open9P2000() serves the wanix root namespace over original
+                // 9P2000 via the Go fs/p9p server (knusbaum/go9p). The far end
+                // of the port is P9PortReadWriter + p9p.Serve; each postMessage
+                // is one complete 9P packet (size[4] LE + type + tag + body).
+                const port = kernel._open9P2000();
+                if (host9pTransport === "serial") {
+                    wireSerial9P(emulator, host9pSerial, port, debug9p);
+                    status.textContent = `host 9P on serial${host9pSerial} (go fs/p9p)`;
+                } else {
+                    // virtio-9p: bind the Go 9P server's MessagePort to the
+                    // handle_fn we gave v86 at construction. Replies are
+                    // routed by tag to the matching reply_cb (one RPC may be
+                    // in flight per tag; devmnt pipelining is fine since
+                    // fs/p9p.Serve is strictly sequential and the MessagePort
+                    // is in-order, but tag routing is robust regardless).
+                    port.onmessage = (event) => {
+                        const data = event.data instanceof Uint8Array
+                            ? event.data
+                            : new Uint8Array(event.data);
+                        const tag = data[5] | (data[6] << 8);
+                        if (debug9p) {
+                            console.log(`9P <- host (${data.length}B type ${data[4]} tag ${tag})`);
+                        }
+                        const cb = p9pending.get(tag);
+                        if (cb) {
+                            p9pending.delete(tag);
+                            cb(data);
+                        }
+                    };
+                    p9port = port;
+                    while (p9queued.length) {
+                        p9port.postMessage(p9queued.shift());
+                    }
+                    status.textContent = "host 9P on virtio-9p (go fs/p9p)";
+                }
+            }
+
+            try {
+                await ensureTree(root);
+            } catch (err) {
+                // Best-effort: the 9P bridge is already up, and the services
+                // below only need the uploads/downloads ramfs (which the alloc
+                // binds provide). Don't let a missing seed file block them.
+                console.error("ensureTree:", err);
+            }
+            status.textContent = host9p
+                ? (host9pTransport === "serial"
+                    ? `host 9P on serial${host9pSerial} ready`
+                    : "host 9P on virtio-9p ready")
+                : "host namespace ready (no 9P)";
+
+            startNamespaceServices(root).catch((err) => {
+                console.error("namespace services:", err);
+            });
+            startFsaService(root).catch((err) => {
+                console.error("fsa services:", err);
+            });
+            startUsbService(root).catch((err) => {
+                console.error("usb service:", err);
+            });
+        }
+
+        // Relay v86 serialN <-> the Go 9P server's MessagePort. v86 fires
+        // serialN-output-byte once per byte; we accumulate complete 9P frames
+        // (LE uint32 size header) and post each to the server. Responses come
+        // back as complete packets and are fed to the guest's serial input.
+        function wireSerial9P(emulator, serial, p9port, debug) {
+            p9port.onmessage = (event) => {
+                const data = event.data instanceof Uint8Array
+                    ? event.data
+                    : new Uint8Array(event.data);
+                if (debug) {
+                    console.log(`9P <- host (${data.length}B)`);
+                }
+                emulator.serial_send_bytes(serial, data);
+            };
+
+            let buf = [];
+            let msgLen = 0;
+            emulator.add_listener(`serial${serial}-output-byte`, (b) => {
+                buf.push(b & 0xff);
+                if (buf.length === 4) {
+                    msgLen = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
+                }
+                if (msgLen > 0 && buf.length === msgLen) {
+                    const frame = new Uint8Array(buf);
+                    if (debug) {
+                        console.log(`9P -> host (${frame.length}B type ${frame[4]})`);
+                    }
+                    p9port.postMessage(frame);
+                    buf.length = 0;
+                    msgLen = 0;
+                }
+            });
+        }
+
+        async function startNamespaceServices(root) {
+            let lastFetchCtl = "";
+            let lastClip = await readText(root, "clip/text");
+            const exported = new Set();
+            let busy = false;
+
+            setInterval(async () => {
+                if (busy) {
+                    return;
+                }
+                busy = true;
+                try {
+                    const ctl = (await readText(root, "fetch/ctl")).trim();
+                    if (ctl && ctl !== lastFetchCtl) {
+                        lastFetchCtl = ctl;
+                        await runFetch(root, ctl);
+                    }
+
+                    const clip = await readText(root, "clip/text");
+                    if (clip !== lastClip) {
+                        lastClip = clip;
+                        await maybeWriteClipboard(clip);
+                    }
+
+                    await exposeDownloads(root, exported);
+                } finally {
+                    busy = false;
+                }
+            }, 300);
+        }
+
+        // Browser File System Access API bridges. The guest triggers a picker
+        // by writing a command to a 9P control file (halctl write <ctl> <cmd>),
+        // which we poll here. Pickers must run on the page main thread (workers
+        // can't show file dialogs) and within the browser's transient
+        // user-activation window; the guest's keypress that launched the command
+        // is that gesture, and the 9P write + this 300ms poll land inside it.
+        //
+        // Open (host file -> guest):
+        //   halctl write uploads/ctl open
+        //   # browser file picker opens; pick a file
+        //   halctl import in /tmp/<name>      # name is in uploads/name
+        // Save (guest file -> host):
+        //   halctl export /tmp/report.txt report.txt   # bytes -> downloads/report.txt
+        //   halctl write downloads/ctl save report.txt # browser save picker
+        async function startFsaService(root) {
+            let openInProgress = false;
+            let saveInProgress = false;
+
+            setInterval(async () => {
+                // open: host file -> uploads/in + uploads/name
+                try {
+                    const upCtl = (await readText(root, "uploads/ctl")).trim();
+                    if (upCtl === "open" && !openInProgress) {
+                        openInProgress = true;
+                        console.log("fsa: open trigger received");
+                        status.textContent = "browser: opening file picker...";
+                        await writeText(root, "uploads/ctl", "opening"); // ack
+                        try {
+                            await openViaPicker(root);
+                        } catch (err) {
+                            console.error("open picker:", err);
+                            status.textContent = `open picker failed: ${err.name || err.message || err}`;
+                            await writeText(root, "uploads/ctl",
+                                `error ${err.name || err.message || err}`);
+                        } finally {
+                            openInProgress = false;
+                        }
+                    }
+                } catch (err) {
+                    console.error("fsa open poll:", err);
+                }
+
+                // save: downloads/<name> -> host file via save picker
+                try {
+                    const dlCtl = (await readText(root, "downloads/ctl")).trim();
+                    if (dlCtl.startsWith("save ") && !saveInProgress) {
+                        const name = dlCtl.slice(5).trim();
+                        saveInProgress = true;
+                        console.log("fsa: save trigger received", name);
+                        status.textContent = `browser: saving ${name}...`;
+                        await writeText(root, "downloads/ctl", "saving"); // ack
+                        try {
+                            await saveViaPicker(root, name);
+                        } catch (err) {
+                            console.error("save picker:", err);
+                            status.textContent = `save picker failed: ${err.name || err.message || err}`;
+                            await writeText(root, "downloads/ctl",
+                                `error ${err.name || err.message || err}`);
+                        } finally {
+                            saveInProgress = false;
+                        }
+                    }
+                } catch (err) {
+                    console.error("fsa save poll:", err);
+                }
+            }, 300);
+        }
+
+        // WebUSB bridge (page-side; see the usb/ namespace bind above). Maps a
+        // real USB device to a small request/response 9P file protocol under
+        // usb/<id>/, so the guest can drive devices the 9legacy kernel can't
+        // reach (v86 has no USB host controller). All transfers go through a
+        // single req/resp pair per device so it maps cleanly onto static
+        // ramfs files (no lossy streaming):
+        //   usb/ctl        write: "open [vid 0xVID pid 0xPID | class 0xCLS]"
+        //                       "close <id>", "reset <id>"
+        //                  read : last status (e.g. "ready 0", "error ...")
+        //   usb/devices    read : one line per open device
+        //                       "<id> vid:pid cfg <manuf> <product>"
+        //   usb/<id>/ctl   write: "claim <iface>", "release <iface>",
+        //                       "close", "set <iface> <baud> <8|7><n|o|e><1|2>"
+        //                       (CDC line coding), "control <bm> <breq> <wval>
+        //                       <widx> <wlen> <hex>"
+        //                  read : device/interface/endpoint info
+        //   usb/<id>/req   write: a transfer to run, then poll usb/<id>/resp:
+        //                       "control <bm> <breq> <wval> <widx> <wlen>
+        //                           <hexdata>"
+        //                       "in <ep> <len>"
+        //                       "out <ep> <hexdata>"
+        //   usb/<id>/resp  read : "ok <len> <hex>" or "err <msg>"
+        // WebUSB (requestDevice/open/transfer) needs the main thread + a user
+        // gesture; the guest's keypress + this 300ms poll land inside the
+        // browser's transient-activation window, same as the file picker.
+        async function startUsbService(root) {
+            if (!("usb" in navigator)) {
+                await writeText(root, "usb/ctl", "error WebUSB unavailable (Chrome/Edge + secure context required)");
+                return;
+            }
+            const devs = new Map();   // id -> { device, claimed:Set, lastReq }
+            let nextId = 0;
+            let ctlBusy = false;
+
+            async function refreshDevices() {
+                const lines = [];
+                for (const [id, d] of devs) {
+                    const mfr = d.device.manufacturerName || "";
+                    const prod = d.device.productName || "";
+                    lines.push(`${id} 0x${toHex(d.device.vendorId, 4)}:0x${toHex(d.device.productId, 4)} cfg${d.device.configuration ? d.device.configuration.configurationValue : 0} ${mfr} ${prod}`);
+                }
+                await writeText(root, "usb/devices", lines.join("\n") + (lines.length ? "\n" : ""));
+            }
+
+            async function openDevice(filters) {
+                const device = await navigator.usb.requestDevice({ filters });
+                if (!device.opened) { await device.open(); }
+                // Select a configuration if none is active; claimInterface
+                // fails on an unconfigured device. Pick the first config.
+                if (!device.configuration && device.configurations.length) {
+                    try { await device.selectConfiguration(
+                        device.configurations[0].configurationValue); }
+                    catch (_) {}  // some devices reject SET_CONFIGURATION; ignore
+                }
+                const id = String(nextId++);
+                devs.set(id, { device, claimed: new Set() });
+                await root.makeDirAll(`usb/${id}`);
+                await writeText(root, `usb/${id}/ctl`, "");
+                await writeText(root, `usb/${id}/status`, `open`);
+                await writeText(root, `usb/${id}/req`, "");
+                await writeText(root, `usb/${id}/resp`, `ok 0`);
+                await writeInfo(root, id, devs.get(id));
+                await refreshDevices();
+                await writeText(root, "usb/ctl", `ready ${id}`);
+                status.textContent = `usb: opened device ${id} (0x${toHex(device.vendorId,4)}:0x${toHex(device.productId,4)})`;
+            }
+
+            async function writeInfo(root, id, d) {
+                const dev = d.device;
+                const lines = [`id ${id}`, `vid 0x${toHex(dev.vendorId,4)}`, `pid 0x${toHex(dev.productId,4)}`, `opened ${dev.opened}`];
+                const cfg = dev.configuration;
+                lines.push(`config ${cfg ? cfg.configurationValue : 0}`);
+                if (cfg) for (const iface of cfg.interfaces) {
+                    lines.push(` iface ${iface.interfaceNumber} alt ${iface.alternates.length}`);
+                    for (const alt of iface.alternates) {
+                        lines.push(`  alt ${alt.alternateSetting} class 0x${toHex(alt.interfaceClass,2)} sub 0x${toHex(alt.interfaceSubclass,2)} proto 0x${toHex(alt.interfaceProtocol,2)} ${alt.interfaceName||""}`);
+                        for (const ep of alt.endpoints) {
+                            lines.push(`   ep 0x${toHex(ep.endpointNumber,2)} ${ep.direction} ${ep.type} maxpkt ${ep.packetSize}`);
+                        }
+                    }
+                }
+                await writeText(root, `usb/${id}/info`, lines.join("\n") + "\n");
+            }
+
+            async function closeDevice(id) {
+                const d = devs.get(id);
+                if (!d) { return; }
+                try {
+                    for (const iface of d.claimed) { await d.device.releaseInterface(iface); }
+                    await d.device.close();
+                } catch (_) {}
+                devs.delete(id);
+                try { await root.removeAll(`usb/${id}`); } catch (_) {}
+                await refreshDevices();
+                await writeText(root, "usb/ctl", `closed ${id}`);
+            }
+
+            // Parse "vid 0x2341 pid 0x0043" / "class 0x0A" / "" into WebUSB filters.
+            function parseFilters(rest) {
+                const filters = [];
+                const tok = rest.trim().split(/\s+/).filter(Boolean);
+                for (let i = 0; i + 1 < tok.length; i += 2) {
+                    if (tok[i] === "vid" && tok[i+1]) { const f = { vendorId: parseInt(tok[i+1], 0) }; i++; if (tok[i+1] === "pid") { f.productId = parseInt(tok[i+2], 0); i++; } filters.push(f); }
+                    else if (tok[i] === "class") { filters.push({ classCode: parseInt(tok[i+1], 0) }); }
+                }
+                return filters;
+            }
+
+            // WebUSB setup.requestType/recipient take string enums, not the
+            // numeric bmRequestType fields, so map them here.
+            const REQTYPE = ["standard", "class", "vendor"];
+            const RECIP = ["device", "interface", "endpoint", "other"];
+            function dvBytes(dv) {
+                if (!dv) return new Uint8Array(0);
+                return new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+            }
+            async function runControl(d, bmReqType, bReq, wVal, wIdx, dataOrLen) {
+                const setup = {
+                    requestType: REQTYPE[(bmReqType >> 5) & 3],
+                    recipient: RECIP[bmReqType & 3],
+                    index: wIdx, request: bReq, value: wVal,
+                };
+                // SET/OUT direction: dataOrLen is a Uint8Array payload.
+                // GET/IN direction: dataOrLen is a number (length to read).
+                if (typeof dataOrLen === "number") {
+                    const r = await d.device.controlTransferIn(setup, dataOrLen);
+                    return { status: r.status, data: dvBytes(r.data) };
+                } else {
+                    const r = await d.device.controlTransferOut(setup, dataOrLen);
+                    return { status: r.status, data: new Uint8Array(0) };
+                }
+            }
+
+            function parseReq(line) {
+                // "control <bm> <breq> <wval> <widx> <wlen> <hex>"  (hex optional -> IN)
+                // "in <ep> <len>"   "out <ep> <hex>"
+                const t = line.trim().split(/\s+/);
+                if (t[0] === "control") {
+                    const bm = parseInt(t[1], 0), bReq = parseInt(t[2], 0), wVal = parseInt(t[3], 0), wIdx = parseInt(t[4], 0), wLen = parseInt(t[5], 0);
+                    const dirIn = ((bm >> 7) & 1) === 1;   // bit7 = direction (1 = IN)
+                    if (dirIn) return { kind: "control-in", bm, bReq, wVal, wIdx, wLen };
+                    const data = t[6] ? hexToBytes(t[6]) : new Uint8Array(0);
+                    return { kind: "control-out", bm, bReq, wVal, wIdx, wLen, data };
+                }
+                if (t[0] === "in")  return { kind: "in",  ep: parseInt(t[1], 0) & 0xff, len: parseInt(t[2], 0) || 64 };
+                if (t[0] === "out") return { kind: "out", ep: parseInt(t[1], 0) & 0xff, data: hexToBytes(t[2] || "") };
+                return null;
+            }
+
+            async function runReq(id, d, line) {
+                const r = parseReq(line);
+                if (!r) { await writeText(root, `usb/${id}/resp`, "err bad request"); return; }
+                try {
+                    let out = "";
+                    if (r.kind === "control-in") {
+                        const res = await runControl(d, r.bm, r.bReq, r.wVal, r.wIdx, r.wLen);
+                        out = `ok ${res.data.length} ${bytesToHex(res.data)} ${res.status}`;
+                    } else if (r.kind === "control-out") {
+                        const res = await runControl(d, r.bm, r.bReq, r.wVal, r.wIdx, r.data);
+                        out = `ok 0 ${res.status}`;
+                    } else if (r.kind === "in") {
+                        const res = await d.device.transferIn(r.ep, r.len);
+                        const data = dvBytes(res.data);
+                        out = `ok ${data.length} ${bytesToHex(data)} ${res.status}`;
+                    } else if (r.kind === "out") {
+                        const res = await d.device.transferOut(r.ep, r.data);
+                        out = `ok ${r.data.length} ${res.status}`;
+                    }
+                    await writeText(root, `usb/${id}/resp`, out);
+                } catch (e) {
+                    await writeText(root, `usb/${id}/resp`, `err ${e.name || e.message || e}`);
+                }
+            }
+
+            async function handleDevCtl(id, d, cmd) {
+                const t = cmd.trim().split(/\s+/);
+                const sp = `usb/${id}/status`;
+                try {
+                    if (t[0] === "claim") { await d.device.claimInterface(parseInt(t[1], 0)); d.claimed.add(parseInt(t[1], 0)); await writeText(root, sp, `claimed ${t[1]}`); }
+                    else if (t[0] === "release") { await d.device.releaseInterface(parseInt(t[1], 0)); d.claimed.delete(parseInt(t[1], 0)); await writeText(root, sp, `released ${t[1]}`); }
+                    else if (t[0] === "close") { await closeDevice(id); return; }
+                    else if (t[0] === "control") {
+                        const bm = parseInt(t[1],0), bReq = parseInt(t[2],0), wVal = parseInt(t[3],0), wIdx = parseInt(t[4],0);
+                        const dirIn = ((bm >> 7) & 1) === 1;
+                        if (dirIn) { const res = await runControl(d, bm, bReq, wVal, wIdx, parseInt(t[5],0)||0); await writeText(root, sp, `ok ${res.data.length} ${bytesToHex(res.data)}`); }
+                        else { const res = await runControl(d, bm, bReq, wVal, wIdx, hexToBytes(t[6]||"")); await writeText(root, sp, `ok ${res.status}`); }
+                    }
+                    else if (t[0] === "set") {
+                        // set <iface> <baud> <8|7><n|o|e><1|2>  -> CDC SET_LINE_CODING
+                        const iface = parseInt(t[1],0), baud = parseInt(t[2],0);
+                        const fmt = t[3] || "8n1";
+                        const dbits = parseInt(fmt[0]||"8",10);
+                        const par = ({n:0,o:1,e:2,m:3}[fmt[1]||"n"]) ?? 0;
+                        const stop = (fmt[2]==="2") ? 2 : 0;
+                        const lc = new Uint8Array(7);
+                        new DataView(lc.buffer).setUint32(0, baud, true); lc[4]=stop; lc[5]=par; lc[6]=dbits;
+                        // bmRequestType 0x21 (host->device, class, interface)
+                        const res = await runControl(d, 0x21, 0x20, 0, iface, lc);
+                        await writeText(root, sp, `set ${baud} ${fmt} ${res.status}`);
+                    }
+                    else { await writeText(root, sp, `err unknown: ${cmd}`); }
+                } catch (e) {
+                    await writeText(root, sp, `err ${e.name || e.message || e}`);
+                }
+            }
+
+            // Main poll loop: usb/ctl (open/close/reset) + per-device ctl/req.
+            setInterval(async () => {
+                if (ctlBusy) return; ctlBusy = true;
+                try {
+                    let ctl; try { ctl = (await readText(root, "usb/ctl")).trim(); } catch { ctl = ""; }
+                    if (ctl.startsWith("open")) {
+                        await writeText(root, "usb/ctl", "opening");
+                        try { await openDevice(parseFilters(ctl.slice(4))); }
+                        catch (e) { await writeText(root, "usb/ctl", `error ${e.name || e.message || e}`); }
+                    } else if (ctl.startsWith("close ")) {
+                        await closeDevice(ctl.slice(6).trim());
+                    } else if (ctl.startsWith("reset ")) {
+                        const id = ctl.slice(6).trim(); const d = devs.get(id);
+                        if (d) { try { await d.device.reset(); await writeText(root, "usb/ctl", `reset ${id}`); } catch (e) { await writeText(root, "usb/ctl", `error ${e.message||e}`); } }
+                    }
+                    for (const [id, d] of devs) {
+                        try {
+                            // Edge-triggered: a command in usb/<id>/ctl is
+                            // handled once, then cleared so it doesn't re-fire.
+                            // Results land in usb/<id>/status. Same for req/resp.
+                            const dc = (await readText(root, `usb/${id}/ctl`)).trim();
+                            if (dc) { await handleDevCtl(id, d, dc); if (devs.has(id)) await writeText(root, `usb/${id}/ctl`, ""); }
+                            const req = (await readText(root, `usb/${id}/req`)).trim();
+                            if (req) { await runReq(id, d, req); if (devs.has(id)) await writeText(root, `usb/${id}/req`, ""); }
+                        } catch (e) { /* device dir may be transient */ }
+                    }
+                } finally { ctlBusy = false; }
+            }, 300);
+
+            await writeText(root, "usb/ctl", "ready");
+            status.textContent = "usb bridge ready";
+        }
+
+        function toHex(n, w) { return (n >>> 0).toString(16).padStart(w, "0"); }
+        function bytesToHex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2, "0")).join(""); }
+        function hexToBytes(h) {
+            h = h.replace(/\s+/g, "");
+            const out = new Uint8Array(h.length >> 1);
+            for (let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i*2, 2), 16);
+            return out;
+        }
+
+        async function openViaPicker(root) {
+            // Exit pointer lock first; a locked canvas can suppress the
+            // browser's native file dialog.
+            try { document.exitPointerLock?.(); } catch (_) {}
+            if (typeof window.showOpenFilePicker === "function") {
+                const [handle] = await window.showOpenFilePicker();
+                const file = await handle.getFile();
+                await commitPickedFile(root, file);
+            } else {
+                // Fallback for non-Chromium: hidden <input type=file>. No FSA
+                // handle, but fine for a one-shot import.
+                const file = await pickViaInput();
+                await commitPickedFile(root, file);
+            }
+        }
+
+        async function commitPickedFile(root, file) {
+            const buf = new Uint8Array(await file.arrayBuffer());
+            // Detect PDF by MIME type or the "%PDF-" magic at the head. If it's
+            // a PDF, render each page to a PNG in the browser (via pdf.js) and
+            // ship the image set to the guest; `page` renders PNG natively, so
+            // no ghostscript is needed. Everything else falls through to the
+            // single-file import into uploads/in.
+            const isPdf = file.type === "application/pdf" ||
+                (buf.length >= 5 &&
+                    buf[0] === 0x25 && buf[1] === 0x50 &&
+                    buf[2] === 0x44 && buf[3] === 0x46 &&
+                    buf[4] === 0x2d); // "%PDF-"
+            if (isPdf) {
+                await commitPickedPdf(root, file, buf);
+                return;
+            }
+            // Drop any stale page set from a prior PDF pick so the guest's
+            // "is this a PDF?" test (dir uploads/pages exists) stays honest.
+            try { await root.removeAll("uploads/pages"); } catch (_) {}
+            await root.writeFile("uploads/in", buf);
+            await writeText(root, "uploads/name", file.name || "unnamed");
+            await writeText(root, "uploads/ctl",
+                `done ${file.name || "unnamed"} ${buf.length}`);
+            status.textContent = `imported ${file.name || "unnamed"} ` +
+                `(${(buf.length / 1024).toFixed(1)} KiB) into uploads/in`;
+        }
+
+        // Render a picked PDF to one PNG per page under uploads/pages/, plus a
+        // manifest listing the page filenames in order. The guest's `wopen`
+        // detects the pages/ dir, imports the PNGs, and runs `page` over them.
+        // The raw PDF is also kept in uploads/in in case someone wants the
+        // original bytes via `halctl import in`.
+        async function commitPickedPdf(root, file, pdfBytes) {
+            status.textContent = `rendering PDF ${file.name || ""} to images...`;
+            const pdfjs = await loadPdfjs();
+            const doc = await pdfjs.getDocument({
+                data: pdfBytes,
+                isEvalSupported: false,
+                disableFontFace: false,
+            }).promise;
+            const npages = doc.numPages;
+            // Reset the pages dir from any prior pick.
+            try { await root.removeAll("uploads/pages"); } catch (_) {}
+            await root.makeDirAll("uploads/pages");
+            const pad = (n) => String(n).padStart(4, "0");
+            const manifest = [];
+            for (let i = 1; i <= npages; i++) {
+                const page = await doc.getPage(i);
+                const viewport = page.getViewport({ scale: 1.5 });
+                const canvas = document.createElement("canvas");
+                canvas.width = Math.ceil(viewport.width);
+                canvas.height = Math.ceil(viewport.height);
+                const ctx = canvas.getContext("2d");
+                await page.render({ canvasContext: ctx, viewport }).promise;
+                const blob = await new Promise(
+                    (res) => canvas.toBlob(res, "image/png"));
+                const png = new Uint8Array(await blob.arrayBuffer());
+                const name = `page-${pad(i)}.png`;
+                await root.writeFile(`uploads/pages/${name}`, png);
+                manifest.push(name);
+                status.textContent =
+                    `rendered page ${i}/${npages} of ${file.name || "pdf"}`;
+            }
+            await writeText(root, "uploads/pages/manifest",
+                manifest.join("\n") + "\n");
+            await root.writeFile("uploads/in", pdfBytes);
+            await writeText(root, "uploads/name", file.name || "unnamed");
+            await writeText(root, "uploads/ctl",
+                `done ${file.name || "unnamed"} ${pdfBytes.length} pdf ${npages}`);
+            status.textContent =
+                `imported PDF ${file.name || ""}: ${npages} page(s) -> uploads/pages/`;
+        }
+
+        // Lazy-load pdf.js (ESM from jsdelivr) once. The worker is also ESM and
+        // cross-origin Worker construction is blocked by browsers, so fetch the
+        // worker bundle and run it from a same-origin blob as a module Worker,
+        // then hand it to pdf.js via GlobalWorkerOptions.workerPort. The bundle
+        // is self-contained (no external imports / import.meta), so a blob URL
+        // is safe. Only loaded on first PDF pick; non-PDF picks pay no cost.
+        let _pdfjsPromise;
+        const PDFJS_VERSION = "4.8.69";
+        const PDFJS_BASE =
+            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build`;
+        function loadPdfjs() {
+            if (!_pdfjsPromise) {
+                _pdfjsPromise = (async () => {
+                    const m = await import(`${PDFJS_BASE}/pdf.min.mjs`);
+                    const workerSrc = await (await fetch(
+                        `${PDFJS_BASE}/pdf.worker.min.mjs`)).text();
+                    const blob = new Blob([workerSrc],
+                        { type: "text/javascript" });
+                    m.GlobalWorkerOptions.workerPort = new Worker(
+                        URL.createObjectURL(blob), { type: "module" });
+                    return m;
+                })();
+            }
+            return _pdfjsPromise;
+        }
+
+        async function saveViaPicker(root, name) {
+            try { document.exitPointerLock?.(); } catch (_) {}
+            const data = await root.readFile(`downloads/${name}`);
+            if (typeof window.showSaveFilePicker === "function") {
+                const handle = await window.showSaveFilePicker({ suggestedName: name });
+                const writable = await handle.createWritable();
+                await writable.write(data);
+                await writable.close();
+                await writeText(root, "downloads/ctl", `saved ${name}`);
+                status.textContent = `saved ${name} via browser`;
+            } else {
+                // Fallback: trigger a plain download of downloads/<name>.
+                downloadBlob(name, data);
+                await writeText(root, "downloads/ctl", `downloaded ${name}`);
+            }
+        }
+
+        function pickViaInput() {
+            return new Promise((resolve, reject) => {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.style.display = "none";
+                input.onchange = () => {
+                    const f = input.files && input.files[0];
+                    if (f) {
+                        resolve(f);
+                    } else {
+                        reject(new Error("no file selected"));
+                    }
+                    input.remove();
+                };
+                document.body.appendChild(input);
+                input.click();
+            });
+        }
+
+        function downloadBlob(name, data) {
+            const blob = new Blob([data], { type: "application/octet-stream" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = name;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+        }
+
+        async function ensureTree(root) {
+            for (const dir of ["clip", "downloads", "fetch", "net", "uploads", "app"]) {
+                await ignoreExists(() => root.makeDirAll(dir));
+            }
+            await ignoreExists(() => writeText(root, "READY", "READY\n"));
+            await ignoreExists(() => ensureFile(root, "clip/text", "browser clipboard bridge ready\n"));
+            await ignoreExists(() => ensureFile(root, "fetch/ctl", ""));
+            await ignoreExists(() => writeText(root, "fetch/body", "write a URL to fetch/ctl\n"));
+            await ignoreExists(() => writeText(root, "net/status", [
+                "wanix direct serial9p up",
+                `v86 net ${netMode}`,
+                `relay ${relayURL || "none"}`,
+                typeof fetch === "function" ? "fetch available" : "fetch unavailable",
+                "",
+            ].join("\n")));
+            await ignoreExists(() => ensureFile(root, "uploads/upload.txt", "uploaded through wanix direct service\n"));
+            await ignoreExists(() => ensureFile(root, "app/ctl", ""));
+            // File System Access picker triggers. The guest writes a command
+            // to the ctl file (halctl write <ctl> <cmd>); startFsaService polls
+            // it and opens the browser file picker. See startFsaService.
+            await ignoreExists(() => ensureFile(root, "uploads/ctl", ""));
+            await ignoreExists(() => ensureFile(root, "uploads/name", ""));
+            await ignoreExists(() => ensureFile(root, "uploads/in", ""));
+            await ignoreExists(() => ensureFile(root, "downloads/ctl", ""));
+        }
+
+        async function ensureFile(root, path, text) {
+            try {
+                await root.stat(path);
+            } catch (_) {
+                await writeText(root, path, text);
+            }
+        }
+
+        async function runFetch(root, url) {
+            status.textContent = `host fetch ${url}`;
+            try {
+                const response = await fetch(url);
+                const body = await response.text();
+                await writeText(root, "fetch/body", [
+                    `HTTP ${response.status} ${response.statusText}`,
+                    `URL ${response.url}`,
+                    "",
+                    body,
+                ].join("\n"));
+            } catch (err) {
+                await writeText(root, "fetch/body", `fetch failed: ${err.message || err}\n`);
+            }
+            status.textContent = "host namespace ready";
+        }
+
+        async function exposeDownloads(root, exported) {
+            let entries = [];
+            try {
+                entries = await root.readDir("downloads");
+            } catch (_) {
+                return;
+            }
+            // readDir returns a Go []string; an empty dir is a nil slice which
+            // marshals to JS `null`, so guard before iterating.
+            if (!Array.isArray(entries)) {
+                return;
+            }
+            for (const entry of entries) {
+                if (entry.endsWith("/") || exported.has(entry)) {
+                    continue;
+                }
+                const data = await root.readFile(`downloads/${entry}`);
+                exported.add(entry);
+                const blob = new Blob([data], { type: "application/octet-stream" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = entry;
+                link.textContent = `${entry} (${(data.length / 1024).toFixed(1)} KiB)`;
+                downloads.appendChild(link);
+            }
+        }
+
+        async function readText(root, path) {
+            return dec.decode(await root.readFile(path));
+        }
+
+        async function writeText(root, path, text) {
+            await root.writeFile(path, enc.encode(text));
+        }
+
+        async function maybeWriteClipboard(text) {
+            try {
+                await navigator.clipboard?.writeText(text);
+            } catch (_) {
+                // Browsers can reject clipboard writes without a direct gesture.
+            }
+        }
+
+        async function ignoreExists(fn) {
+            try {
+                await fn();
+            } catch (_) {}
+        }
+
+        function loadCopyshRuntime() {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = "../local/copysh-v86/build/libv86.js";
+                script.onload = () => resolve(window.V86);
+                script.onerror = () => reject(new Error("failed to load copy.sh v86 runtime"));
+                document.head.appendChild(script);
+            });
+        }
+    </script>
+</body>
+</html>

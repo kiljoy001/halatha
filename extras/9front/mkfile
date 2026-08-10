@@ -1,0 +1,10 @@
+# mkfile for serial9p (9front/9legacy, 386). libc only.
+# Build: objtype=386 mk
+# Run mk from a Plan 9 terminal with 386 compiler tools available.
+
+</$objtype/mkfile
+
+TARG=serial9p
+OFILES=serial9p.$O
+
+</sys/src/cmd/mkone

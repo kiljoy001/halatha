@@ -1,0 +1,290 @@
+<html>
+<head>
+    <title>basic-vm-9legacy</title>
+    <script type="module" src="/dist/wanix.min.js?v=screen-handshake"></script>
+    <style>
+        html,
+        body,
+        wanix-namespace,
+        wanix-vm {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+        }
+
+        #host-status {
+            position: fixed;
+            left: 10px;
+            bottom: 10px;
+            z-index: 10;
+            color: #ddd;
+            background: rgba(0, 0, 0, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
+            padding: 6px 8px;
+            font: 13px system-ui, sans-serif;
+            pointer-events: none;
+        }
+
+        #host-downloads {
+            position: fixed;
+            right: 10px;
+            bottom: 10px;
+            z-index: 10;
+            display: grid;
+            gap: 6px;
+        }
+
+        #host-downloads a {
+            color: #e8f1ff;
+            background: rgba(0, 0, 0, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
+            padding: 6px 8px;
+            font: 13px system-ui, sans-serif;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!--
+        Boot 9legacy (Plan 9 from Bell Labs, 386) to rio in the browser.
+
+        This uses the patched local image produced by:
+
+            go run extras/9front/mk9legacyimg.go \
+                -base ~/Downloads/9legacy-copysh.img \
+                -serial9p /tmp/wanix-serial9p.386 \
+                -add local/halctl.386:/386/bin/halctl:0775 \
+                -addtree extras/halatha:/sys/src/halatha \
+                -out local/9legacy-wanix-ygg-o9-halatha.img
+
+        `boot="c"` boots the hard disk. 9legacy panics under this v86 build
+        when ACPI is enabled, so this example leaves ACPI off. The `screen`
+        attribute gives <wanix-vm> a VGA canvas (click to focus for
+        keyboard/mouse) where rio renders.
+
+        The image includes /386/bin/serial9p and a /rc/bin/termrc hook that
+        mounts the wanix namespace at /n/host over v86 serial1 (COM2,
+        /dev/eia1). It also includes /386/bin/halctl, the first Halatha guest
+        command for talking to browser services exposed as files.
+
+        The example enables v86's fetch network backend so the guest gets DHCP
+        and a browser-backed route. For the grid/Yggdrasil path, replace
+        `relay="fetch"` with a WISP relay (a WebSocket->TCP server you run;
+        browsers can't raw TCP):
+
+            <wanix-vm id="vm"
+                hda="/local/9legacy-wanix-ygg-o9-halatha.img?v=serial1"
+                netdev="ne2k" relay="wisp://your-wisp-relay:port"
+                boot="c" mem="512M"
+                screen start
+                style="width: 100%; height: 100%;"></wanix-vm>
+
+        With WISP networking, the guest runs your 9front/9legacy Yggdrasil port
+        and reaches cpu/auth/file servers on the grid. Without a relay, the
+        serial /n/host bridge still gives the guest the wanix host namespace.
+    -->
+    <wanix-namespace id="legacy" allow-origins="*" debug>
+
+        <!-- outer namespace root for the browser page and VM resource setup -->
+        <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
+
+        <wanix-bind dst="#vm/v86" type="archive"
+            src="/extras/dist/v86.tgz?v=serial1">
+        </wanix-bind>
+
+        <wanix-vm id="vm"
+            hda="/local/9legacy-wanix-ygg-o9-halatha.img?v=serial1"
+            netdev="ne2k" relay="fetch"
+            boot="c" mem="512M"
+            screen start
+            style="width: 100%; height: 100%;">
+
+            <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
+            <wanix-bind dst="clip" src="#ramfs/new"></wanix-bind>
+            <wanix-bind dst="downloads" src="#ramfs/new"></wanix-bind>
+            <wanix-bind dst="fetch" src="#ramfs/new"></wanix-bind>
+            <wanix-bind dst="net" src="#ramfs/new"></wanix-bind>
+            <wanix-bind dst="uploads" src="#ramfs/new"></wanix-bind>
+            <wanix-bind dst="app" src="#ramfs/new"></wanix-bind>
+
+            <wanix-bind dst="READY" type="file" perm="0666">READY
+</wanix-bind>
+            <wanix-bind dst="clip/text" type="file" perm="0666">browser clipboard bridge ready
+</wanix-bind>
+            <wanix-bind dst="fetch/ctl" type="file" perm="0666"></wanix-bind>
+            <wanix-bind dst="fetch/body" type="file" perm="0666">write a URL to fetch/ctl
+</wanix-bind>
+            <wanix-bind dst="net/status" type="file" perm="0666">wanix wrapper namespace up
+</wanix-bind>
+            <wanix-bind dst="uploads/upload.txt" type="file" perm="0666">uploaded through wanix wrapper service
+</wanix-bind>
+            <wanix-bind dst="app/ctl" type="file" perm="0666"></wanix-bind>
+        </wanix-vm>
+
+    </wanix-namespace>
+
+    <div id="host-status">halatha host namespace starting</div>
+    <div id="host-downloads"></div>
+
+    <script type="module">
+        const enc = new TextEncoder();
+        const dec = new TextDecoder();
+        const status = document.getElementById("host-status");
+        const downloads = document.getElementById("host-downloads");
+        const vm = document.getElementById("vm");
+
+        document.getElementById("legacy").addEventListener("ready", () => {
+            startHalathaNamespaceServices().catch((err) => {
+                console.error("halatha namespace services:", err);
+                status.textContent = "halatha host namespace failed";
+            });
+        });
+
+        async function startHalathaNamespaceServices() {
+            const root = await waitForTaskRoot();
+            await ensureTree(root);
+            status.textContent = "halatha host namespace ready";
+
+            let lastFetchCtl = "";
+            let lastClip = await readText(root, "clip/text");
+            const exported = new Set();
+            let busy = false;
+
+            setInterval(async () => {
+                if (busy) {
+                    return;
+                }
+                busy = true;
+                try {
+                    const ctl = (await readText(root, "fetch/ctl")).trim();
+                    if (ctl && ctl !== lastFetchCtl) {
+                        lastFetchCtl = ctl;
+                        await runFetch(root, ctl);
+                    }
+
+                    const clip = await readText(root, "clip/text");
+                    if (clip !== lastClip) {
+                        lastClip = clip;
+                        await maybeWriteClipboard(clip);
+                    }
+
+                    await exposeDownloads(root, exported);
+                } finally {
+                    busy = false;
+                }
+            }, 300);
+        }
+
+        async function waitForTaskRoot() {
+            for (let i = 0; i < 200; i++) {
+                if (vm.task?.taskRoot) {
+                    return vm.task.taskRoot;
+                }
+                await sleep(50);
+            }
+            throw new Error("VM task namespace did not appear");
+        }
+
+        async function ensureTree(root) {
+            for (const dir of ["clip", "downloads", "fetch", "net", "uploads", "app"]) {
+                await ignoreExists(() => root.makeDirAll(dir));
+            }
+            await writeText(root, "READY", "READY\n");
+            await ensureFile(root, "clip/text", "browser clipboard bridge ready\n");
+            await ensureFile(root, "fetch/ctl", "");
+            await writeText(root, "fetch/body", "write a URL to fetch/ctl\n");
+            await writeText(root, "net/status", [
+                "wanix wrapper serial9p up",
+                "v86 net ne2k",
+                "relay fetch",
+                "fetch available",
+                "",
+            ].join("\n"));
+            await ensureFile(root, "uploads/upload.txt", "uploaded through wanix wrapper service\n");
+            await ensureFile(root, "app/ctl", "");
+        }
+
+        async function ensureFile(root, path, text) {
+            try {
+                await root.stat(path);
+            } catch (_) {
+                await writeText(root, path, text);
+            }
+        }
+
+        async function runFetch(root, url) {
+            status.textContent = `halatha fetch ${url}`;
+            try {
+                const response = await fetch(url);
+                const body = await response.text();
+                await writeText(root, "fetch/body", [
+                    `HTTP ${response.status} ${response.statusText}`,
+                    `URL ${response.url}`,
+                    "",
+                    body,
+                ].join("\n"));
+            } catch (err) {
+                await writeText(root, "fetch/body", `fetch failed: ${err.message || err}\n`);
+            }
+            status.textContent = "halatha host namespace ready";
+        }
+
+        async function exposeDownloads(root, exported) {
+            let entries = [];
+            try {
+                entries = await root.readDir("downloads");
+            } catch (_) {
+                return;
+            }
+            for (const entry of entries) {
+                if (entry.endsWith("/") || exported.has(entry)) {
+                    continue;
+                }
+                const data = await root.readFile(`downloads/${entry}`);
+                exported.add(entry);
+                const blob = new Blob([data], { type: "application/octet-stream" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = entry;
+                link.textContent = `${entry} (${(data.length / 1024).toFixed(1)} KiB)`;
+                downloads.appendChild(link);
+            }
+        }
+
+        async function readText(root, path) {
+            return dec.decode(await root.readFile(path));
+        }
+
+        async function writeText(root, path, text) {
+            await root.writeFile(path, enc.encode(text));
+        }
+
+        async function maybeWriteClipboard(text) {
+            try {
+                await navigator.clipboard?.writeText(text);
+            } catch (_) {
+                // Browsers can reject clipboard writes without a direct gesture.
+            }
+        }
+
+        async function ignoreExists(fn) {
+            try {
+                await fn();
+            } catch (_) {}
+        }
+
+        function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+    </script>
+
+</body>
+</html>

@@ -25,6 +25,7 @@ import (
 	"tractor.dev/wanix/fs/httpfs"
 	"tractor.dev/wanix/fs/memfs"
 	"tractor.dev/wanix/fs/p9kit"
+	"tractor.dev/wanix/fs/p9p"
 	"tractor.dev/wanix/fs/pipe"
 	"tractor.dev/wanix/fs/signal"
 	"tractor.dev/wanix/fs/tarfs"
@@ -195,6 +196,27 @@ func main() {
 		return ch.Port()
 	}))
 
+	// _open9P2000 serves a task's namespace over the original 9P2000 dialect
+	// (what a 9front guest speaks), over a transparent byte-stream MessagePort.
+	// The v86 worker relays serial0 to this port so 9front can mount the host
+	// namespace. Contrast _open9P, which serves 9P2000.L for the Linux guest.
+	el.Set("_open9P2000", js.FuncOf(func(this js.Value, args []js.Value) any {
+		ch := js.Global().Get("MessageChannel").New()
+		rw := NewP9PortReadWriter(ch.Get("port1"))
+		go func() {
+			task := root
+			if len(args) > 0 {
+				if t, err := root.Lookup(args[0].String()); err == nil {
+					task = t
+				}
+			}
+			if err := p9p.Serve(task.NS(), rw, rw); err != nil {
+				log.Println("p9p serve:", err)
+			}
+		}()
+		return ch.Get("port2")
+	}))
+
 	el.Set("_updateTerminals", js.FuncOf(func(this js.Value, args []js.Value) any {
 		// termEl := args[0]
 		for _, task := range root.Tasks() {
@@ -207,6 +229,31 @@ func main() {
 			})
 		}
 		return js.Undefined()
+	}))
+
+	// _sendToWorker posts a message (with optional transferables) to a task's
+	// gojs worker. Used by <wanix-vm screen> to hand a MessagePort to the v86
+	// worker so it can receive the transferred VGA canvas and DOM input.
+	// Returns true if the worker was found and messaged, false otherwise (so
+	// the caller can retry until the worker has started).
+	el.Set("_sendToWorker", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if len(args) < 2 {
+			return js.ValueOf(false)
+		}
+		t, err := root.Lookup(args[0].String())
+		if err != nil {
+			return js.ValueOf(false)
+		}
+		w := worker.FromTask(t)
+		if w.IsUndefined() {
+			return js.ValueOf(false)
+		}
+		if len(args) > 2 && !args[2].IsUndefined() {
+			w.Call("postMessage", args[1], args[2])
+		} else {
+			w.Call("postMessage", args[1])
+		}
+		return js.ValueOf(true)
 	}))
 
 	el.Set("_setupNamespace", js.FuncOf(func(this js.Value, args []js.Value) any {

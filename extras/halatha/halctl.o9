@@ -1,0 +1,320 @@
+function halctlmainraw() int64 {
+    int64 out;
+
+    c {
+        O9String *os;
+        Dir *d, *dirs;
+        char *cmd, *arg1, *arg2, *env, *base, *slash;
+        char root[256], path[1024], dst[1024], buf[8192];
+        char *svc[6];
+        vlong argc, total;
+        int fd, ofd, n, i;
+
+        out = 0;
+        cmd = nil;
+        arg1 = nil;
+        arg2 = nil;
+        env = nil;
+        d = nil;
+        dirs = nil;
+
+        svc[0] = "clip/text";
+        svc[1] = "downloads";
+        svc[2] = "fetch/ctl";
+        svc[3] = "fetch/body";
+        svc[4] = "net/status";
+        svc[5] = "uploads";
+
+        env = getenv("halroot");
+        if(env != nil && env[0] != '\0')
+            snprint(root, sizeof root, "%s", env);
+        else {
+            d = dirstat("/n/wanix/READY");
+            if(d == nil)
+                d = dirstat("/n/wanix/clip/text");
+            if(d != nil)
+                snprint(root, sizeof root, "/n/wanix");
+            else
+                snprint(root, sizeof root, "/n/host");
+            if(d != nil){
+                free(d);
+                d = nil;
+            }
+        }
+        if(env != nil)
+            free(env);
+
+        argc = o9_process_argc();
+        if(argc > 1){
+            os = o9_process_arg(1);
+            cmd = o9_string_cstr(os);
+            o9_string_release(os);
+        }
+        if(argc > 2){
+            os = o9_process_arg(2);
+            arg1 = o9_string_cstr(os);
+            o9_string_release(os);
+        }
+        if(argc > 3){
+            os = o9_process_arg(3);
+            arg2 = o9_string_cstr(os);
+            o9_string_release(os);
+        }
+
+        if(argc < 2 || strcmp(cmd, "help") == 0){
+            print("usage: halctl command [args]\n");
+            print("commands: root status ls [path] cat path write path data append path data mkdir path\n");
+            print("          clip get|set [data] net fetch url export src [name] import name [dst]\n");
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "root") == 0){
+            print("%s\n", root);
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "status") == 0){
+            d = dirstat(root);
+            print("halatha root %s\n", root);
+            print("mounted %d\n", d != nil && (d->mode & DMDIR));
+            if(d != nil){
+                free(d);
+                d = nil;
+            }
+            print("services:\n");
+            for(i = 0; i < 6; i++){
+                snprint(path, sizeof path, "%s/%s", root, svc[i]);
+                cleanname(path);
+                d = dirstat(path);
+                if(d == nil)
+                    print("  %s missing\n", svc[i]);
+                else {
+                    if(d->mode & DMDIR)
+                        print("  %s dir\n", svc[i]);
+                    else
+                        print("  %s file %lld bytes\n", svc[i], d->length);
+                    free(d);
+                    d = nil;
+                }
+            }
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "ls") == 0){
+            if(arg1 == nil || arg1[0] == '\0')
+                snprint(path, sizeof path, "%s", root);
+            else if(arg1[0] == '/')
+                snprint(path, sizeof path, "%s", arg1);
+            else
+                snprint(path, sizeof path, "%s/%s", root, arg1);
+            cleanname(path);
+            fd = open(path, OREAD);
+            if(fd < 0){
+                print("open failed %s\n", path);
+                goto halctl_done;
+            }
+            n = dirreadall(fd, &dirs);
+            close(fd);
+            if(n < 0){
+                print("dirread failed %s\n", path);
+                goto halctl_done;
+            }
+            for(i = 0; i < n; i++)
+                print("%s\n", dirs[i].name);
+            free(dirs);
+            dirs = nil;
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "clip") == 0){
+            if(arg1 != nil && strcmp(arg1, "get") == 0){
+                snprint(path, sizeof path, "%s/clip/text", root);
+                cmd = "cat";
+                arg1 = path;
+            } else if(arg1 != nil && strcmp(arg1, "set") == 0 && arg2 != nil){
+                snprint(path, sizeof path, "%s/clip/text", root);
+                fd = create(path, OWRITE, 0644);
+                if(fd < 0)
+                    print("write failed %s\n", path);
+                else {
+                    write(fd, arg2, strlen(arg2));
+                    close(fd);
+                    print("wrote clip/text\n");
+                }
+                goto halctl_done;
+            } else {
+                print("usage: halctl clip get|set [data]\n");
+                goto halctl_done;
+            }
+        }
+
+        if(strcmp(cmd, "net") == 0){
+            snprint(path, sizeof path, "%s/net/status", root);
+            cmd = "cat";
+            arg1 = path;
+        }
+
+        if(strcmp(cmd, "fetch") == 0){
+            if(arg1 == nil){
+                print("usage: halctl fetch url\n");
+                goto halctl_done;
+            }
+            snprint(path, sizeof path, "%s/fetch/ctl", root);
+            fd = create(path, OWRITE, 0644);
+            if(fd < 0){
+                print("fetch ctl unavailable\n");
+                goto halctl_done;
+            }
+            write(fd, arg1, strlen(arg1));
+            close(fd);
+            snprint(path, sizeof path, "%s/fetch/body", root);
+            cmd = "cat";
+            arg1 = path;
+        }
+
+        if(strcmp(cmd, "cat") == 0 || strcmp(cmd, "read") == 0){
+            if(arg1 == nil){
+                print("usage: halctl cat path\n");
+                goto halctl_done;
+            }
+            if(arg1[0] == '/')
+                snprint(path, sizeof path, "%s", arg1);
+            else
+                snprint(path, sizeof path, "%s/%s", root, arg1);
+            cleanname(path);
+            fd = open(path, OREAD);
+            if(fd < 0){
+                print("open failed %s\n", path);
+                goto halctl_done;
+            }
+            while((n = read(fd, buf, sizeof buf)) > 0)
+                write(1, buf, n);
+            close(fd);
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "write") == 0 || strcmp(cmd, "append") == 0){
+            if(arg1 == nil || arg2 == nil){
+                print("usage: halctl %s path data\n", cmd);
+                goto halctl_done;
+            }
+            if(arg1[0] == '/')
+                snprint(path, sizeof path, "%s", arg1);
+            else
+                snprint(path, sizeof path, "%s/%s", root, arg1);
+            cleanname(path);
+            if(strcmp(cmd, "append") == 0){
+                fd = open(path, OWRITE);
+                if(fd < 0)
+                    fd = create(path, OWRITE, 0644);
+                else
+                    seek(fd, 0, 2);
+            } else
+                fd = create(path, OWRITE, 0644);
+            if(fd < 0)
+                print("write failed %s\n", path);
+            else {
+                write(fd, arg2, strlen(arg2));
+                close(fd);
+                print("wrote %s\n", path);
+            }
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "mkdir") == 0){
+            if(arg1 == nil){
+                print("usage: halctl mkdir path\n");
+                goto halctl_done;
+            }
+            if(arg1[0] == '/')
+                snprint(path, sizeof path, "%s", arg1);
+            else
+                snprint(path, sizeof path, "%s/%s", root, arg1);
+            cleanname(path);
+            fd = create(path, OREAD, DMDIR|0755);
+            if(fd < 0)
+                print("mkdir failed %s\n", path);
+            else {
+                close(fd);
+                print("mkdir %s\n", path);
+            }
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "export") == 0){
+            if(arg1 == nil){
+                print("usage: halctl export src [name]\n");
+                goto halctl_done;
+            }
+            if(arg2 != nil)
+                base = arg2;
+            else {
+                slash = strrchr(arg1, '/');
+                base = slash == nil ? arg1 : slash + 1;
+            }
+            snprint(dst, sizeof dst, "%s/downloads", root);
+            create(dst, OREAD, DMDIR|0755);
+            snprint(dst, sizeof dst, "%s/downloads/%s", root, base);
+            cleanname(dst);
+            fd = open(arg1, OREAD);
+            ofd = create(dst, OWRITE, 0644);
+            if(fd < 0 || ofd < 0)
+                print("export failed\n");
+            else {
+                total = 0;
+                while((n = read(fd, buf, sizeof buf)) > 0){
+                    write(ofd, buf, n);
+                    total += n;
+                }
+                print("exported %lld bytes to %s\n", total, dst);
+            }
+            if(fd >= 0)
+                close(fd);
+            if(ofd >= 0)
+                close(ofd);
+            goto halctl_done;
+        }
+
+        if(strcmp(cmd, "import") == 0){
+            if(arg1 == nil){
+                print("usage: halctl import name [dst]\n");
+                goto halctl_done;
+            }
+            snprint(path, sizeof path, "%s/uploads/%s", root, arg1);
+            cleanname(path);
+            if(arg2 != nil)
+                snprint(dst, sizeof dst, "%s", arg2);
+            else
+                snprint(dst, sizeof dst, "%s", arg1);
+            fd = open(path, OREAD);
+            ofd = create(dst, OWRITE, 0644);
+            if(fd < 0 || ofd < 0)
+                print("import failed\n");
+            else {
+                total = 0;
+                while((n = read(fd, buf, sizeof buf)) > 0){
+                    write(ofd, buf, n);
+                    total += n;
+                }
+                print("imported %lld bytes to %s\n", total, dst);
+            }
+            if(fd >= 0)
+                close(fd);
+            if(ofd >= 0)
+                close(ofd);
+            goto halctl_done;
+        }
+
+        print("unknown command %s\n", cmd);
+
+    halctl_done:
+        ;
+    }
+
+    return out;
+}
+
+main {
+    Task<int64> t = spawn halctlmainraw();
+    int64 ignored = t.await();
+}

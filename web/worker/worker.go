@@ -82,6 +82,7 @@ func (r *Resource) Start(args ...string) error {
 
 	port := sys.Element().Call("_openPort", r.task.ID())
 	p9 := sys.Element().Call("_open9P", r.task.ID())
+	p9p := sys.Element().Call("_open9P2000", r.task.ID())
 
 	r.worker.Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) any {
 		go func() {
@@ -135,10 +136,11 @@ func (r *Resource) Start(args ...string) error {
 		"tid":  r.task.ID(),
 		"port": port,
 		"p9":   p9,
+		"p9p":  p9p,
 		"cmd":  strings.Join(args, " "),
 		"env":  env,
 		"url":  url,
-	}}, []any{port, p9})
+	}}, []any{port, p9, p9p})
 
 	r.state = "running"
 	return nil

@@ -1,0 +1,22 @@
+#!/bin/rc
+# /rc/bin/termrc.local — wanix host namespace mount.
+#
+# Sourced by /rc/bin/termrc at boot. 9front's console is on VGA, so the first
+# serial port (eia1, v86 serial1 / COM2) carries 9P2000 to the wanix host,
+# which serves the namespace there. serial9p posts eia1 as /srv/host; the
+# kernel mounts it and speaks 9P over the serial port.
+
+# cd / is implied. /n must exist for the mountpoint.
+if(! test -d /n)
+	mkdir -p /n
+
+if(test -x /bin/serial9p){
+	serial9p /dev/eia1 host &
+	# /srv/host appears once serial9p has posted it; wait briefly.
+	for(i in 1 2 3 4 5){
+		if(! test -e /srv/host)
+			sleep 1
+	}
+	if(test -e /srv/host)
+		mount -c /srv/host /n/host &
+}

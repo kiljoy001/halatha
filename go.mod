@@ -19,6 +19,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hanwen/go-fuse/v2 v2.7.2
 	github.com/hugelgupf/p9 v0.3.1-0.20240118043522-6f4f11e5296e
+	github.com/knusbaum/go9p v1.18.0
 	github.com/progrium/go-netstack v0.0.0-20240720002214-37b2b8227b91
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701
 	go.bug.st/serial v1.6.4
@@ -28,8 +29,12 @@ require (
 )
 
 require (
+	9fans.net/go v0.0.2 // indirect
+	github.com/Plan9-Archive/libauth v0.0.0-20180917063427-d1ca9e94969d // indirect
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/creack/goselect v0.1.2 // indirect
+	github.com/emersion/go-sasl v0.0.0-20200509203442-7bfe0ed36a21 // indirect
+	github.com/fhs/mux9p v0.3.1 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect

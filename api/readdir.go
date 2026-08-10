@@ -20,7 +20,9 @@ func (s *syscaller) readDir(r rpc.Responder, c *rpc.Call) {
 		return
 	}
 
-	var entries []string
+	// Start with an empty (non-nil) slice so an empty directory marshals
+	// to a JS array `[]` rather than `null`; callers iterate the result.
+	entries := []string{}
 	for _, e := range dir {
 		name := e.Name()
 		if e.IsDir() {

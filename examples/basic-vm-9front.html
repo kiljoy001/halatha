@@ -1,0 +1,38 @@
+<html>
+<head>
+    <title>basic-vm-9front</title>
+    <script type="module" src="../dist/wanix.min.js"></script>
+</head>
+<body style="height: 100vh; margin: 0;">
+
+    <!--
+        Boot 9front (386) to VGA/rio in the browser under v86.
+
+        You need the 9front 386 disk image served from a CORS-enabled host that
+        supports HTTP Range requests (v86 range-loads it async). For local
+        testing, download a 9front 386 ISO (e.g. from http://9front.org/iso/),
+        place it where the examples server can serve it, and point hda at the
+        absolute URL below. Same-origin (e.g. http://localhost:7070/...) avoids
+        CORS entirely.
+
+        ACPI is required for 9front to boot under v86 (v86 issue #332); the
+        `acpi` attribute enables it. `boot="c"` boots from the hard disk image.
+        The `screen` attribute gives <wanix-vm> a VGA display surface it sizes
+        via CSS; click the canvas to focus it for keyboard/mouse input.
+    -->
+    <wanix-namespace id="ninep" allow-origins="*" debug>
+
+        <!-- add the v86 vm driver to the namespace -->
+        <wanix-bind dst="#vm/v86" src="../v86/v86.tgz" type="archive"></wanix-bind>
+
+        <!-- declare and start a 9front vm booting from the disk image -->
+        <wanix-vm id="vm"
+            hda="http://localhost:7070/9front-386.iso"
+            acpi boot="c" mem="128M"
+            screen start
+            style="width: 100%; height: 100%;"></wanix-vm>
+
+    </wanix-namespace>
+
+</body>
+</html>

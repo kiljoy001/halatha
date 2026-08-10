@@ -10,7 +10,9 @@
     ],
     "scripts": {
         "build": "make js",
-        "prepublishOnly": "npm run build"
+        "prepublishOnly": "npm run build",
+        "wisp": "wisp-js-server --host 127.0.0.1 --port 5001 --options '{\"allow_loopback_ips\":true,\"allow_private_ips\":true}'",
+        "wisp:lan": "wisp-js-server --host 0.0.0.0 --port 5001 --options '{\"allow_private_ips\":true}'"
     },
     "dependencies": {
         "@bjorn3/browser_wasi_shim": "^0.4.1",
@@ -19,5 +21,8 @@
         "@xterm/xterm": "^6.0.0",
         "cbor-x": "^1.6.0",
         "ws": "^8.21.0"
+    },
+    "devDependencies": {
+        "@mercuryworkshop/wisp-js": "^0.4.1"
     }
 }

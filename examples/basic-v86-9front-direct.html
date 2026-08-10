@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>direct-v86-9front</title>
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #111;
+            color: #ddd;
+            font: 13px system-ui, sans-serif;
+        }
+
+        #screen_container {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+        }
+
+        #screen_container canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #screen_container > div {
+            white-space: pre;
+            font: 14px monospace;
+        }
+
+        #status {
+            position: fixed;
+            left: 10px;
+            bottom: 10px;
+            padding: 6px 8px;
+            background: rgba(0, 0, 0, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="screen_container">
+        <div></div>
+        <canvas></canvas>
+    </div>
+    <div id="status">loading v86</div>
+
+    <script type="module">
+        import { V86 } from "../v86/lib/libv86.mjs";
+
+        const status = document.getElementById("status");
+        const mib = (bytes) => (bytes / 1024 / 1024).toFixed(1) + " MiB";
+
+        const emulator = new V86({
+            screen_container: document.getElementById("screen_container"),
+            bios: {
+                url: "../v86/bundle/seabios.bin",
+            },
+            vga_bios: {
+                url: "../v86/bundle/vgabios.bin",
+            },
+            wasm_path: "../v86/bundle/v86.wasm",
+            memory_size: 128 * 1024 * 1024,
+            vga_memory_size: 8 * 1024 * 1024,
+            acpi: true,
+            hda: {
+                url: "https://i.copy.sh/9front-10931.386/.iso",
+                size: 489453568,
+                async: true,
+                use_parts: true,
+                fixed_chunk_size: 1024 * 1024,
+            },
+            initial_state: {
+                url: "https://i.copy.sh/9front_state-v3.bin.zst",
+            },
+            autostart: true,
+        });
+
+        emulator.add_listener("download-progress", (progress) => {
+            const total = progress.total || 0;
+            const loaded = progress.loaded || 0;
+            const name = progress.file_name || "asset";
+            status.textContent = total
+                ? `${name}: ${mib(loaded)} / ${mib(total)}`
+                : `${name}: ${mib(loaded)}`;
+        });
+
+        emulator.add_listener("download-error", (event) => {
+            const name = event.file_name || "asset";
+            const request = event.request;
+            status.textContent = `download failed: ${name} (${request && request.status})`;
+        });
+
+        emulator.add_listener("emulator-loaded", () => {
+            status.textContent = "9front state loaded";
+            setTimeout(() => {
+                status.style.display = "none";
+            }, 5000);
+        });
+
+        window.emulator = emulator;
+    </script>
+</body>
+</html>
