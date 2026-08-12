@@ -11,3 +11,6 @@
 /go.work.sum
 /go.work
 /toolkit-go
+
+/hostexport
+/mk9legacyimg

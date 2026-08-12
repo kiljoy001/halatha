@@ -8,9 +8,11 @@ import (
 	"go.bug.st/serial"
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs/localfs"
+	"tractor.dev/wanix/fs/net/tcp"
 	"tractor.dev/wanix/fs/p9kit"
 	"tractor.dev/wanix/native"
 	"tractor.dev/wanix/term"
+	"tractor.dev/wanix/wisp"
 )
 
 func main() {
@@ -18,6 +20,7 @@ func main() {
 
 	taskfs := wanix.NewTaskFS()
 	taskfs.Register("native", &native.ExecDriver{})
+	taskfs.Register("wisp", &wisp.Driver{})
 	root, err := wanix.NewRootWithTasks(taskfs)
 	if err != nil {
 		log.Fatal(err)
@@ -34,6 +37,14 @@ func main() {
 	termfs := term.New(nil)
 	if err := root.NS().Bind(termfs, ".", "#term"); err != nil {
 		log.Fatal(err)
+	}
+
+	// Bind the previously-unused Plan 9-style /net/tcp service so the native
+	// kernel namespace has a real-TCP capability (net/tcp). The wisp task kind
+	// (registered above) lets a guest or host script start a WISP relay via
+	// #task/new/wisp + start.
+	if err := root.NS().Bind(tcp.New(), ".", "net/tcp"); err != nil {
+		log.Fatal("bind net/tcp:", err)
 	}
 
 	if err := root.Bind("#task", "task"); err != nil {

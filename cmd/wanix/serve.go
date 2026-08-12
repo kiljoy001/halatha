@@ -5,11 +5,13 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,12 +26,15 @@ import (
 	"tractor.dev/toolkit-go/duplex/mux"
 	"tractor.dev/toolkit-go/engine/cli"
 	"tractor.dev/wanix/fs/p9kit"
+	"tractor.dev/wanix/wisp"
 )
 
 func serveCmd() *cli.Command {
 	var (
 		listenAddr string
 		bundle     string
+		wispOn     bool
+		caCerts    stringAccum
 	)
 	cmd := &cli.Command{
 		Usage: "serve [dir]",
@@ -78,6 +83,30 @@ func serveCmd() *cli.Command {
 			http.Handle("/.well-known/ethernet", ethernetHandler(vn))
 			http.Handle("/.well-known/export9p", export9pHandler())
 
+			// Same-origin WISP relay: any page served by `wanix serve` gets a
+			// WebSocket->TCP relay at /.well-known/wisp with zero per-page
+			// config. The page discovers it via GET /.well-known/wanix (below)
+			// and auto-points its v86 network backend at it, so the guest gets
+			// real outbound TCP (for Yggdrasil/grid) without the page author
+			// running a separate relay or setting WISP_RELAY. Disable with
+			// --wisp=false (the relay dials arbitrary TCP for browsers, so treat
+			// a public-facing serve like an open proxy until you add auth).
+			if wispOn {
+				auth := buildCertAuth(caCerts)
+				relay := &wisp.Relay{
+					Logger: log.New(os.Stderr, "wisp: ", log.LstdFlags|log.Lmsgprefix),
+					Auth:   auth,
+				}
+				http.Handle("/.well-known/wisp", relay)
+				http.Handle("/.well-known/wisp/auth", wisp.CertAuthHandler(auth))
+				http.Handle("/.well-known/wanix", wanixConfigHandler(auth))
+				if auth != nil && auth.Enabled() {
+					fmt.Printf("WISP relay at: wisp://%s:%s/.well-known/wisp (auth: cert, %d root(s); TCP inert without a valid cert)\n", h, p, len(auth.Roots))
+				} else {
+					fmt.Printf("WISP relay at: wisp://%s:%s/.well-known/wisp (open — set --wisp-ca-cert to gate)\n", h, p)
+				}
+			}
+
 			p9srv := p9.NewServer(p9kit.Attacher(dirfs, p9kit.WithXattrAttrStore()))
 
 			http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +126,73 @@ func serveCmd() *cli.Command {
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":7654", "addr to serve on")
 	cmd.Flags().StringVar(&bundle, "bundle", "", "default bundle to use")
+	cmd.Flags().BoolVar(&wispOn, "wisp", true, "host a same-origin WISP relay at /.well-known/wisp (WebSocket->TCP) so pages get outbound TCP with zero config")
+	cmd.Flags().Var(&caCerts, "wisp-ca-cert", "path to a PEM file of trusted CA root(s) that gate the relay; repeatable. Empty (default) = open relay for local dev. When set, every WS upgrade must present a single-use token obtained by proving possession of a certificate that chains to one of these roots (cert + sig over a relay-issued nonce, exchanged at /.well-known/wisp/auth). Without a valid cert the relay refuses the upgrade and dials nothing — TCP egress is inert. Intended credential: a per-node-start leaf issued by a CA whose root is anchored on Emercoin NVS (stepca-9p/tpm9p/emercoin-9p).")
 	return cmd
+}
+
+// stringAccum is a repeatable string flag.Value (std flag has no slice type).
+type stringAccum []string
+
+func (s *stringAccum) String() string {
+	if s == nil {
+		return ""
+	}
+	return strings.Join(*s, ",")
+}
+func (s *stringAccum) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// buildCertAuth reads the PEM CA root files collected by --wisp-ca-cert into a
+// wisp.CertAuth. Returns nil (open relay) when none are given or none parse, so
+// local dev stays zero-config.
+func buildCertAuth(paths []string) *wisp.CertAuth {
+	var roots [][]byte
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "wanix: ignoring unreadable --wisp-ca-cert %q: %v\n", p, err)
+			continue
+		}
+		roots = append(roots, b)
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	a := &wisp.CertAuth{Roots: roots}
+	if !a.Enabled() {
+		fmt.Fprintf(os.Stderr, "wanix: --wisp-ca-cert provided no parseable CA roots; relay stays open\n")
+		return nil
+	}
+	return a
+}
+
+// wanixConfigHandler serves a small JSON document advertising the same-origin
+// WISP relay path. Pages built with wanix fetch /.well-known/wanix on boot; if
+// it responds, the page knows its origin is served by wanix and auto-points the
+// v86 network backend at the relay (building the full wisp://<its-host> URL
+// from its own location, so http vs https is handled client-side). A 404 (any
+// non-wanix host) tells the page to fall back to fetch / a grid relay.
+//
+// When auth is enabled, the document also advertises "auth":"cert" and the
+// auth endpoint path; the page then runs the cert challenge flow (fetch nonce ->
+// guest signs sha256(nonce) with its cert key -> POST cert+sig -> open authed WS
+// with the returned token) before connecting. Without auth, only "wisp" is
+// advertised and the page connects directly.
+func wanixConfigHandler(auth *wisp.CertAuth) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cache-Control", "no-store")
+		doc := map[string]string{"wisp": "/.well-known/wisp"}
+		if auth != nil && auth.Enabled() {
+			doc["auth"] = "cert"
+			doc["auth-endpoint"] = "/.well-known/wisp/auth"
+		}
+		_ = json.NewEncoder(w).Encode(doc)
+	})
 }
 
 func p9Handler(srv *p9.Server, w http.ResponseWriter, r *http.Request) {

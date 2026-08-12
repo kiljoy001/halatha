@@ -161,6 +161,7 @@
                     ? imageParam
                     : "9legacy-copysh.img";
         const defaultDiskSize = imageName === "9legacy-wanix-virtio9p-full.img"
+              || imageName === "9legacy-wanix-virtio9p-full-usb.img"
             ? 40894464
             : imageName === "9legacy-wanix-ygg.img" ||
               imageName === "9legacy-wanix-ygg-o9-halatha.img"
@@ -172,14 +173,62 @@
         const asyncDisk = params.get("async") === "1";
         const imageVersion = params.get("imgv") || "serial1";
         const netMode = params.get("net") === "none" ? "none" : "ne2k";
-        // Default to v86's browser "fetch" network backend (same as the
-        // basic-vm-9legacy wrapper) so the guest gets DHCP and reaches rio
-        // without waiting on an external relay. Override with ?relay=wisp://…
-        // (WISP WebSocket->TCP relay, for the grid/Yggdrasil path) or
-        // ?net=none (no NIC, fastest boot for testing the serial 9P mount).
-        const relayURL = netMode === "none" || params.get("relay") === "none"
-            ? undefined
-            : params.get("relay") || "fetch";
+        // TCP bridge for the grid/Yggdrasil path. v86's "fetch" backend gives
+        // the guest DHCP + HTTP but NO raw outbound TCP, so yggdrasil runs
+        // (and gets an overlay IPv6) yet cannot dial TCP peers. A WISP relay
+        // (WebSocket->TCP) opens real outbound TCP for the guest.
+        //
+        // ZERO CONFIG: a page author just includes wanix — they do NOT need to
+        // run a separate relay or edit any URL. The relay is resolved at boot
+        // by resolveRelayURL() below, in this precedence (first non-empty wins):
+        //   1. ?relay=…           per-launch override (?relay=none forces fetch)
+        //   2. WISP_RELAY         page-author override (set the const below)
+        //   3. same-origin        if the page is served by `wanix serve`, a
+        //                          built-in relay lives at /.well-known/wisp and
+        //                          is advertised by GET /.well-known/wanix; the
+        //                          page auto-uses it (wisp://this-host/…).
+        //   4. WISP_GRID_RELAY    a grid operator's default public relay (below)
+        //   5. "fetch"            v86's browser backend (DHCP+HTTP, no raw TCP)
+        //
+        // The recommended dedicated/grid relay is wanix's own, run as a native
+        // task:  go run ./cmd/wanix wisp --listen :7655
+        // It boots a minimal native wanix kernel, binds the /net/tcp capability,
+        // and runs the relay as #task/<id>. The relay host must have the
+        // outbound internet access the browser sandbox lacks. (The external
+        // v86/copied.sh relay still works too.) Leave WISP_RELAY empty unless
+        // you want to pin a specific relay for this page.
+        const WISP_RELAY = "";
+        // WISP_GRID_RELAY: the single default public relay a grid operator
+        // publishes for pages NOT served by wanix (no same-origin discovery).
+        // Set it once (e.g. "wisp://grid.example.com:7655") and every page that
+        // embeds wanix elsewhere gets outbound TCP with zero per-page config.
+        // Leave "" to fall back to v86's "fetch" backend instead.
+        const WISP_GRID_RELAY = "";
+        // resolveRelayURL picks the v86 network relay endpoint. net=none (or
+        // ?relay=none) short-circuits to undefined = no NIC. The same-origin
+        // fetch is given a short timeout so a non-wanix host fails fast and
+        // drops through to the grid relay / fetch default.
+        async function resolveRelayURL(params, netMode) {
+            if (netMode === "none" || params.get("relay") === "none") return undefined;
+            const override = params.get("relay") || WISP_RELAY || "";
+            if (override) return override;
+            try {
+                const ctrl = new AbortController();
+                const to = setTimeout(() => ctrl.abort(), 2000);
+                const resp = await fetch("/.well-known/wanix", {
+                    signal: ctrl.signal, cache: "no-store",
+                });
+                clearTimeout(to);
+                if (resp.ok) {
+                    const cfg = await resp.json();
+                    if (cfg && cfg.wisp) {
+                        const scheme = location.protocol === "https:" ? "wisps" : "wisp";
+                        return `${scheme}://${location.host}${cfg.wisp}`;
+                    }
+                }
+            } catch (_) { /* not served by wanix, or timed out: drop through */ }
+            return WISP_GRID_RELAY || "fetch";
+        }
         const host9pDefault = imageName.includes("wanix") || imageName.includes("halatha");
         const host9p = params.has("host9p") ? params.get("host9p") !== "0" : host9pDefault;
         const host9pSerial = params.get("host9pSerial") || "1";
@@ -268,6 +317,12 @@
                 config.uart3 = true;
             }
         }
+        // Resolve the relay now (same-origin discovery / grid fallback) so the
+        // NIC config is ready before the VM is constructed. The page init is
+        // already async (top-level await on the runtime import above), so this
+        // await is safe and adds at most the ~2s discovery timeout on a non-
+        // wanix host before falling back to the grid relay / fetch default.
+        const relayURL = await resolveRelayURL(params, netMode);
         config.net_device = netMode === "none"
             ? { type: "none" }
             : {
