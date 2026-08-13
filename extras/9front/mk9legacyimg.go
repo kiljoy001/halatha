@@ -75,6 +75,8 @@ func main() {
 	menuDefault := flag.String("menu-default", "1280x768,1", "PLAN9.INI menudefault value, or empty to leave unchanged")
 	keepSerialConsole := flag.Bool("keep-serial-console", false, "keep the console=0 b115200 serial-console line in PLAN9.INI (for QEMU serial-scripted build images); by default it is stripped for the v86 VGA console")
 	usbBoot := flag.Bool("usb-boot", false, "set wanixusb=1 in PLAN9.INI [common] so termrc runs usbstart (usbd) at boot; requires the usbns HCI driver + USB userland (/386/bin/usb/usbd) in the image")
+	yggAuto := flag.Bool("ygg", false, "install /rc/bin/halatha.local (from srcdir/halatha.local) to auto-start Yggdrasil at boot once the network is up, and bundle srcdir/yggdrasil.peers as /lib/yggdrasil.peers so public peers are auto-injected (yggdrasilctl addPeer) -- the node joins the global Yggdrasil mesh with no manual config. Also installs /rc/bin/ygg-up (from srcdir/ygg-up.rc) as an on-demand twin of the boot hook: run `ygg-up` by name to (re)start Yggdrasil without rebooting (there is no clipboard into the v86 terminal, so baking the script at a /rc/bin name is how you run it without retyping). Uses a bundled /lib/yggdrasil.conf if present (add one with -add src:/lib/yggdrasil.conf) else generates a fresh random one each boot. Requires /386/bin/yggdrasil in the image. Real TCP peers need the page launched with ?relay=wisp://...")
+	o9dir := flag.String("o9", "../objective-9c", "path to the objective-9c repo (9legacy branch); bundles the prebuilt o9c toolchain -- o9c/o9c, libo9.a, o9.h, the o9build/o9proj/o9plumb/o9plumbbuild rc helpers, the o9 runtime sources, and the 14 stdlib .o9 modules -- at the paths `mk install` would use (/386/bin/o9c, /386/lib/libo9.a, /sys/include/o9.h, /rc/bin/o9*, /sys/src/cmd/o9_*, /sys/lib/o9/stdlib/*) so o9build works in the guest. The image already ships 8c/8l/8a/yacc/ar/mk, so generated C compiles+links in-guest. Pass -o9 '' to skip. Skipped with a warning if the path does not exist. The 9legacy branch carries the lib9p adaptation (9legacy lacks 9front's srvrelease/srvacquire; the facade codegen emits compat shims), so the bundled toolchain targets 9legacy, not just 9front.")
 	var adds multiFlag
 	var addTrees multiFlag
 	flag.Var(&adds, "add", "add a host file as src:dst[:octal-mode]")
@@ -142,6 +144,20 @@ func main() {
 	if err := addPayloads(&entries, adds, addTrees); err != nil {
 		failf("%v", err)
 	}
+	if *yggAuto {
+		if err := installHalathaLocal(&entries, *srcdir); err != nil {
+			failf("%v", err)
+		}
+	}
+	if *o9dir != "" {
+		if info, err := os.Stat(*o9dir); err != nil || !info.IsDir() {
+			fmt.Fprintf(os.Stderr, "mk9legacyimg: -o9 %q not found; skipping o9c toolchain bundle\n", *o9dir)
+		} else {
+			if err := installO9c(&entries, *o9dir); err != nil {
+				failf("%v", err)
+			}
+		}
+	}
 
 	archive := writeArchive(entries)
 	blz, err := packBLZ(archive)
@@ -179,6 +195,9 @@ func main() {
 		verifyPaths = append(verifyPaths, "/rc/bin/wanixnet")
 	} else {
 		verifyPaths = append(verifyPaths, "/386/bin/serial9p", "/sys/src/wanix/serial9p.c")
+	}
+	if *yggAuto {
+		verifyPaths = append(verifyPaths, "/rc/bin/halatha.local", "/386/bin/yggdrasil")
 	}
 	for _, p := range verifyPaths {
 		if findEntry(verifyEntries, p) == nil {
@@ -468,9 +487,24 @@ func withoutSerialConsole(data []byte) []byte {
 func patchPlan9INIContents(data []byte, menuDefault string, keepSerialConsole bool, usbBoot bool) []byte {
 	if !keepSerialConsole {
 		data = withoutSerialConsole(data)
+	} else {
+		// -keep-serial-console is meant for QEMU serial-scripted builds, so
+		// guarantee a COM1 serial console even when the base image was built
+		// without one (console=0 b115200 stripped for the v86 VGA console).
+		// withSectionSetting is a no-op if a console= line is already present.
+		data = withSectionSetting(data, "common", "console", "0 b115200")
 	}
 	data = withMenuDefault(data, menuDefault)
-	data = withSectionSetting(data, "common", "*nousbboot", "1")
+	// nousbboot must be set WITHOUT a '*' prefix. A '*' prefix lands the
+	// var in the kernel global env (#ec) as "*nousbboot" (main.c keeps the
+	// '*'), but boot's getenv("nousbboot") reads /env/nousbboot from the
+	// #e-over-#ec union — so the '*' form is never found, nousbboot stays
+	// 0, usbinit runs, and boot prints "no /boot/usbd" (harmless but noisy;
+	// only surfaced once usbns creates #u/usb/ctl, making usbinit proceed).
+	// The bare form lands in #e/nousbboot where boot reads it. Convert any
+	// stale '*' form left by older builds too.
+	data = bytes.Replace(data, []byte("*nousbboot=1"), []byte("nousbboot=1"), 1)
+	data = withSectionSetting(data, "common", "nousbboot", "1")
 	if usbBoot {
 		data = withSectionSetting(data, "common", "wanixusb", "1")
 	}
@@ -1091,6 +1125,125 @@ func patchVirtio9pEntries(entries *[]archiveEntry) error {
 	return nil
 }
 
+// installHalathaLocal installs /rc/bin/halatha.local (the Yggdrasil boot hook,
+// read from srcdir/halatha.local) so termrc's existing "# halatha optional
+// local boot hook" block activates it, and bundles srcdir/yggdrasil.peers as
+// /lib/yggdrasil.peers so halatha.local can auto-inject public peers at boot.
+// Idempotent: prior installs are overwritten in place. The rc script lives in
+// a real file (not a Go raw-string const) so it can use rc backtick command
+// substitution to read the peers file.
+func installHalathaLocal(entries *[]archiveEntry, srcdir string) error {
+	now := uint32(time.Now().Unix())
+	rc := filepath.Join(srcdir, "halatha.local")
+	if err := addFile(entries, rc, "/rc/bin/halatha.local", 0, false, now); err != nil {
+		return fmt.Errorf("install halatha.local: %w", err)
+	}
+	// ygg-up.rc is the on-demand twin of halatha.local: same Yggdrasil start
+	// logic, runnable by name (`ygg-up`) to (re)start without rebooting. There
+	// is no clipboard into the v86 terminal, so baking the script at a known
+	// /rc/bin name is how you run it without retyping it each boot.
+	yggUp := filepath.Join(srcdir, "ygg-up.rc")
+	if _, err := os.Stat(yggUp); err == nil {
+		if err := addFile(entries, yggUp, "/rc/bin/ygg-up", 0, false, now); err != nil {
+			return fmt.Errorf("install ygg-up: %w", err)
+		}
+	}
+	peers := filepath.Join(srcdir, "yggdrasil.peers")
+	if _, err := os.Stat(peers); err == nil {
+		if err := addFile(entries, peers, "/lib/yggdrasil.peers", 0, false, now); err != nil {
+			return fmt.Errorf("install yggdrasil.peers: %w", err)
+		}
+	}
+	return nil
+}
+
+// installO9c bundles the prebuilt objective-9c toolchain into the image at the
+// paths `mk install` would use, so o9 apps can be built and run in the guest
+// the moment it boots -- this is the distribution avenue for the language: boot
+// the 9legacy VM and o9c is ready to use and develop with, no in-guest build.
+// The image already ships the C toolchain (8c/8l/8a, yacc, ar, mk in /386/bin),
+// so o9build can compile the generated C and link libo9.a in-guest.
+//
+// The prebuilt is read from <o9dir>/release/386, the language's release artifact
+// (a 386 Plan 9 build, consistent o9c+libo9.a pair). Staging it there keeps the
+// prebuilt in the language repo (the thing being distributed); halatha's job is
+// only to install it. To refresh the prebuilt, rebuild on a 9legacy/9front guest
+// (`mk install` to a prefix) and drop the result into release/386. Modes are
+// passed explicitly (0775 for executables, 0664 for data) so the install is
+// independent of the host file's exec bit. Idempotent: addFile upserts by path.
+//
+// The 9legacy branch carries the adaptation for 9legacy's lib9p, which does not
+// expose 9front's srvrelease/srvacquire: the facade codegen in
+// o9c/grammar.d/50-app-facade.y emits compat no-op shims and #defines them over
+// the real symbols. The release/386 prebuilt reflects that, so the bundled
+// toolchain targets 9legacy, not just 9front.
+func installO9c(entries *[]archiveEntry, o9dir string) error {
+	now := uint32(time.Now().Unix())
+	pre := filepath.Join(o9dir, "release", "386")
+	if _, err := os.Stat(pre); err != nil {
+		return fmt.Errorf("install o9c: prebuilt release not found at %s: %w", pre, err)
+	}
+
+	// Required: the compiler, the runtime archive, the header. A missing one is
+	// fatal -- the toolchain is unusable without it. o9c is an exec binary
+	// (0775); libo9.a and o9.h are data (0664).
+	requires := []struct{ src, dst string; mode uint32 }{
+		{filepath.Join(pre, "bin", "o9c"), "/386/bin/o9c", 0775},
+		{filepath.Join(pre, "lib", "libo9.a"), "/386/lib/libo9.a", 0664},
+		{filepath.Join(pre, "include", "o9.h"), "/sys/include/o9.h", 0664},
+	}
+	for _, f := range requires {
+		if err := addFile(entries, f.src, f.dst, f.mode, true, now); err != nil {
+			return fmt.Errorf("install o9c %s: %w", f.dst, err)
+		}
+	}
+
+	// rc build helpers -> /rc/bin (o9build orchestrates transpile+compile+link;
+	// o9proj scaffolds a project; o9plumb/o9plumbbuild wire plumbing). Exec.
+	for _, name := range []string{"o9build", "o9proj", "o9plumb", "o9plumbbuild"} {
+		p := filepath.Join(pre, "rc", name)
+		if _, err := os.Stat(p); err != nil {
+			fmt.Fprintf(os.Stderr, "mk9legacyimg: o9c helper %s missing; skipping\n", name)
+			continue
+		}
+		if err := addFile(entries, p, "/rc/bin/"+name, 0775, true, now); err != nil {
+			return fmt.Errorf("install %s: %w", name, err)
+		}
+	}
+
+	// Runtime sources -> /sys/src/cmd, so `mk` can rebuild libo9.a in-guest if
+	// needed. Data. Non-fatal if absent (the prebuilt archive is installed).
+	for _, name := range []string{"o9_dispatch.s", "o9_runtime.c", "o9_tab_discard.c"} {
+		p := filepath.Join(pre, "src", name)
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if err := addFile(entries, p, "/sys/src/cmd/"+name, 0664, true, now); err != nil {
+			return fmt.Errorf("install %s: %w", name, err)
+		}
+	}
+
+	// Stdlib modules -> /sys/lib/o9/stdlib. The staged release/386/stdlib is the
+	// canonical install set (the 14 core modules + auth_facade_app); read the
+	// dir and install every .o9 so a refreshed release need not touch this code.
+	stdlibDir := filepath.Join(pre, "stdlib")
+	dirEntries, err := os.ReadDir(stdlibDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mk9legacyimg: o9c stdlib dir %s unreadable: %v\n", stdlibDir, err)
+		return nil
+	}
+	for _, e := range dirEntries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".o9") {
+			continue
+		}
+		p := filepath.Join(stdlibDir, e.Name())
+		if err := addFile(entries, p, "/sys/lib/o9/stdlib/"+e.Name(), 0664, true, now); err != nil {
+			return fmt.Errorf("install stdlib %s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
 func addPayloads(entries *[]archiveEntry, adds, addTrees []string) error {
 	now := uint32(time.Now().Unix())
 	for _, spec := range adds {
@@ -1274,20 +1427,33 @@ func ensureArchiveDirs(entries *[]archiveEntry, dir string, now uint32) error {
 
 const wanixNetScript = `#!/bin/rc
 # Bring up browser-backed v86 networking without blocking rio startup.
+# v86's ne2k NIC + fetch/DHCP backend hands the guest 192.168.86.100
+# (router 192.168.86.1). At boot the guest is busy (rio, usbd) and the
+# first DHCP exchanges can drop packets to v86's single-threaded render
+# loop, so we wait for the NIC and keep retrying ipconfig well past the
+# busy boot window instead of giving up after a few tries. (rc has no
+# break/continue builtins, so the loops use guard conditions and run
+# their full iteration count, acting only while the condition is unmet.)
 TIMESYNCARGS=(-ra1000000)
 
-for(i in 1 2 3 4 5){
+# wait for the ne2k (v86 NIC) to attach; can take a few seconds at boot
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
 	if(! test -e /net/ether0)
 		sleep 1
 }
 if(! test -e /net/ether0)
 	exit ''
 
-for(i in 1 2 3 4 5){
+# keep retrying until v86's DHCP gives us 192.168.86.100. ip/ipconfig
+# daemonizes a lease watcher and returns in <=4s per call, so this stays
+# bounded and non-blocking. Suppress stderr: v86's OFFER omits DHCP
+# option 51 (lease time), so ipconfig prints a benign "Offer with 0
+# lease, using 900" warning that would otherwise clutter the boot log.
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15){
 	if(! grep -s '192.168.86.100' /net/ipselftab)
-		ip/ipconfig
+		ip/ipconfig >[2]/dev/null
 	if(! grep -s '192.168.86.100' /net/ipselftab)
-		sleep 2
+		sleep 3
 }
 
 if(! grep -s '192.168.86.100' /net/ipselftab)

@@ -1,0 +1,51 @@
+# Public Yggdrasil peers bundled by mk9legacyimg -ygg; auto-injected
+# at boot by /rc/bin/halatha.local via yggdrasilctl addPeer.
+# Source: github.com/yggdrasil-network/public-peers (curated 2026-08-12).
+# IPv4 + tcp:// / tls:// only: quic:// is UDP (no go over the WISP TCP
+# relay); IPv6 [...] URIs mangle under rc globbing; ?key= peers hit rcs ?
+# glob char. Refresh from the public-peers repo on rebuild.
+# Lines beginning with # are skipped by halatha.local.
+
+tcp://109.107.177.127:65535
+tcp://146.103.107.222:65535
+tcp://146.103.111.53:65535
+tcp://188.225.9.167:18226
+tcp://193.93.119.42:14244
+tcp://212.34.131.160:65535
+tcp://31.57.241.104:65535
+tcp://37.186.113.100:1514
+tcp://37.192.232.33:8080
+tcp://45.147.200.202:12402
+tcp://45.95.202.21:12403
+tcp://51.15.204.214:12345
+tcp://5.252.118.13:65535
+tcp://5.35.70.181:65535
+tcp://62.210.85.80:39565
+tcp://78.27.153.163:33165
+tcp://87.251.77.39:65535
+tcp://88.210.10.78:65535
+tcp://89.110.116.167:65535
+tcp://89.44.86.85:65535
+tls://109.176.250.101:65534
+tls://133.18.201.69:54232
+tls://153.120.42.137:54232
+tls://188.225.9.167:18227
+tls://192.3.13.16:8118
+tls://193.93.119.42:443
+tls://23.184.48.86:1443
+tls://31.22.111.195:32000
+tls://37.186.113.100:1515
+tls://37.192.232.33:442
+tls://37.205.14.171:993
+tls://44.234.134.124:443
+tls://45.147.200.202:443
+tls://45.95.202.21:443
+tls://51.15.204.214:54321
+tls://5.252.118.13:443
+tls://62.210.85.80:39575
+tls://78.27.153.163:33166
+tls://78.27.153.163:3784
+tls://78.27.153.163:3785
+tls://91.98.161.68:9001
+tls://95.217.35.92:1337
+

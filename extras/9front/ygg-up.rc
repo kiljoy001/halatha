@@ -1,0 +1,86 @@
+#!/bin/rc
+# ygg-up.rc - start Yggdrasil on demand in the running guest, no manual config.
+# Installed by mk9legacyimg -ygg as /rc/bin/ygg-up; run it by name (`ygg-up`) to
+# (re)start Yggdrasil without rebooting. Mirrors the /rc/bin/halatha.local boot
+# hook, which auto-runs the same logic at boot -- kept separate so you can
+# re-run after killing yggdrasil or editing peers.
+#
+# Config: /lib/yggdrasil.conf if bundled (stable identity, added via mk9legacyimg
+# -add src:/lib/yggdrasil.conf) else a fresh random one in /tmp. /lib sits on
+# the read-only root fs of a disk-booted image (so > /lib/yggdrasil.conf fails
+# silently), and a per-boot random key must not persist (else it stops being
+# per-boot), so the generated conf goes to /tmp, a writable ramfs cleared each
+# boot. /lib/yggdrasil.conf stays the bundled-stable-identity path.
+#
+# Peer CONNECTION (dialing tcp:// / tls://) needs real outbound TCP, which the
+# browser sandbox cannot open: launch the page with ?relay=wisp://host:port
+# (or set WISP_RELAY) so v86 routes guest TCP via the WISP relay to real TCP.
+# With the default fetch backend yggdrasil runs and gets an overlay address but
+# cannot reach peers.
+#
+# rc has no break/continue builtins; the wait loops run their full count and
+# act only while the condition is unmet.
+
+if(! test -x /386/bin/yggdrasil){
+	echo 'ygg-up: /386/bin/yggdrasil not present; not starting'
+	exit 'no ygg'
+}
+
+# Net should be up by the time you run this post-boot; wait briefly anyway.
+for(i in 1 2 3 4 5 6 7 8 9 10){
+	if(! test -e /net/ipifc/0/ctl)
+		sleep 1
+}
+if(! test -e /net/ipifc/0/ctl){
+	echo 'ygg-up: network did not come up; ipconfig first'
+	exit 'no net'
+}
+
+CONF=/lib/yggdrasil.conf
+if(! test -e $CONF){
+	CONF=/tmp/yggdrasil.conf
+	/386/bin/yggdrasil -genconf > $CONF
+	echo 'ygg-up: generated' $CONF '(random key)'
+}
+if(! test -e $CONF){
+	echo 'ygg-up: yggdrasil -genconf failed; not starting'
+	exit 'no conf'
+}
+
+# Start in the shared namespace (no rfork) so its pkt ipifc is visible to all
+# processes. Admin listener is tcp://localhost:9001 (yggdrasilctl).
+if(ps | grep -v grep | grep -s yggdrasil){
+	echo 'ygg-up: yggdrasil already running'
+}
+if not{
+	/386/bin/yggdrasil -useconffile $CONF -logto /tmp/yggdrasil.log &
+	echo 'ygg-up: yggdrasil started (admin tcp://localhost:9001, log /tmp/yggdrasil.log)'
+}
+
+# Auto-inject public peers from /lib/yggdrasil.peers (bundled by mk9legacyimg
+# -ygg). Peers added at runtime are not persisted, but we re-inject each run.
+if(! test -r /lib/yggdrasil.peers){
+	echo 'ygg-up: no /lib/yggdrasil.peers; peers not injected'
+	exit ''
+}
+# wait for the admin listener (yggdrasilctl getSelf succeeds once it's up)
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20){
+	if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null)
+		sleep 1
+}
+if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null){
+	echo 'ygg-up: yggdrasil admin socket never came up; peers not injected'
+	exit 'no admin'
+}
+n=0
+# grep -s is STATUS ONLY (no output); never combine -s with a list-producing
+# grep. -e gives multiple patterns: skip comments and blank lines. Pass
+# 'uri='$p (single-quoted: rc makes a bare `=` an assignment) so addPeer gets
+# one literal arg uri=<peer> -- a bare URI has no `=` and is ignored.
+for(p in `{grep -v -e '^#' -e '^$' /lib/yggdrasil.peers}){
+	if(yggdrasilctl addPeer 'uri='$p >/dev/null >[2]/dev/null)
+		n=`{hoc -e $n^'+1'}
+}
+echo 'ygg-up: injected' $n 'peers from /lib/yggdrasil.peers'
+yggdrasilctl getSelf
+yggdrasilctl getPeers

@@ -133,3 +133,110 @@ Run a WISP relay (WebSocket→TCP) on a node that can reach your grid (and, if
 you go that route, Yggdrasil peers). Then the guest runs your 9front/9legacy
 Yggdrasil port (build it for 386 — the open item) and reaches cpu/auth/file
 servers on the mesh.
+
+#### Automating Yggdrasil + the TCP bridge at boot
+
+Two pieces, in two places:
+
+1. **Guest side — Yggdrasil daemon.** Build the image with `mk9legacyimg -ygg`
+   (requires `/386/bin/yggdrasil` already in the base image). This installs
+   `/rc/bin/halatha.local` (read from `extras/9front/halatha.local`) and bundles
+   `extras/9front/yggdrasil.peers` as `/lib/yggdrasil.peers`. termrc already
+   runs `halatha.local` in the background at boot (the `# halatha optional
+   local boot hook` block). It waits for an IP interface to be bound
+   (`/net/ipifc/0/ctl` — true under v86 fetch DHCP *or* QEMU SLIRP), then:
+   - uses `/lib/yggdrasil.conf` if present (bundle one with
+     `-add your.conf:/lib/yggdrasil.conf` for a stable node identity + your
+     own peers), otherwise generates a fresh random config each boot
+     (`yggdrasil -genconf` — random key, so each boot is a fresh node identity);
+   - starts `/386/bin/yggdrasil -useconffile /lib/yggdrasil.conf` in the shared
+     namespace so its `pkt` ip interface is visible to every process. The admin
+     listener is `tcp://localhost:9001` (use `yggdrasilctl`); logs go to
+     `/tmp/yggdrasil.log`;
+   - **auto-injects public peers**: once the admin socket is up, it runs
+     `yggdrasilctl addPeer` for every non-comment line of
+     `/lib/yggdrasil.peers`. The bundled peer list is curated from the public
+     [yggdrasil-network/public-peers](https://github.com/yggdrasil-network/public-peers)
+     repo (IPv4-only `tcp://`/`tls://` — `quic://` is UDP and won't tunnel over
+     the WISP TCP relay, IPv6 literals and `?key=` params trip rc globbing).
+     Runtime peers are not persisted, but the script re-injects every boot, so
+     the node joins the global Yggdrasil mesh with no manual config — a terminal
+     for a 9p grid. Replace `extras/9front/yggdrasil.peers` with your own
+     curated list (or bundle `/lib/yggdrasil.conf` with `Peers:` entries) to
+     pin specific peers.
+
+   `halatha.local` is a real rc file (not a Go raw-string const) precisely so
+   it can use rc backtick command substitution (`{grep ...}`) to read the peers
+   file — backticks would close a Go raw string.
+
+2. **Page side — the TCP bridge (WISP relay).** The relay is *not* guest-
+   startable: it lives in the browser/v86 layer. v86's default `fetch` backend
+   gives the guest DHCP + HTTP but **no raw outbound TCP**, so yggdrasil runs
+   yet cannot dial TCP peers. To let it, launch the page with
+   `?relay=wisp://your-relay:port`, or — to automate it on every boot — set
+   `WISP_RELAY` near the top of `examples/basic-v86-9legacy-direct.html` to
+   your relay endpoint (per-launch `?relay=` still overrides). You must run a
+   WISP server on a node that can reach your Yggdrasil peers (e.g. the wisp
+   relay from v86/copied.sh). With WISP in place, the guest's outbound TCP is
+   routed WebSocket→real-TCP by v86, and yggdrasil dials peers normally.
+
+So: `-ygg` makes yggdrasil come up on its own at boot **and auto-inject public
+peers** so it joins the mesh; `WISP_RELAY` (or `?relay=wisp://…`) is what gives
+that yggdrasil real outbound TCP to actually dial those peers. With `-ygg`
+alone (default fetch backend) you get a running node with an overlay address
+and peers injected into its table, but the dials can't complete until WISP
+gives it a TCP path. Under QEMU user networking the peers dial for real
+(no WISP needed) — that's how the build-time verify proves the mesh join.
+
+#### objective-9c toolchain, prebuilt and installed by default
+
+`mk9legacyimg -o9 <path>` (default `../objective-9c`) bundles the **prebuilt**
+objective-9c toolchain into the image at the paths `mk install` would use, so a
+booted 9legacy guest has `o9c` ready to use and develop with — no in-guest build.
+This is the distribution avenue for the language: boot the VM, write `.o9`, run
+`o9build`.
+
+The prebuilt is read from `<o9dir>/release/386/` — the language's release
+artifact (a 386 Plan 9 build, a consistent `o9c`+`libo9.a` pair). Keeping it
+there means the prebuilt lives in the language repo (the thing being
+distributed); halatha only installs it. To refresh it, rebuild on a
+9legacy/9front guest (`mk install` to a prefix) and drop the result into
+`release/386/`:
+
+```
+release/386/
+  bin/o9c            -> /386/bin/o9c            (0775)
+  lib/libo9.a        -> /386/lib/libo9.a        (0664)
+  include/o9.h       -> /sys/include/o9.h       (0664)
+  rc/o9build         -> /rc/bin/o9build         (0775)
+  rc/o9proj          -> /rc/bin/o9proj          (0775)
+  rc/o9plumb         -> /rc/bin/o9plumb         (0775)
+  rc/o9plumbbuild    -> /rc/bin/o9plumbbuild    (0775)
+  src/o9_dispatch.s  -> /sys/src/cmd/o9_dispatch.s   (0664)
+  src/o9_runtime.c   -> /sys/src/cmd/o9_runtime.c    (0664)
+  src/o9_tab_discard.c -> /sys/src/cmd/o9_tab_discard.c (0664)
+  stdlib/*.o9        -> /sys/lib/o9/stdlib/*.o9 (0664)
+```
+
+The image already ships the C toolchain (`8c`/`8l`/`8a`, `yacc`, `ar`, `mk` in
+`/386/bin`), so `o9build` can compile the generated C and link `libo9.a`
+in-guest — only the o9-specific pieces need bundling. The toolchain targets
+**both 9front and 9legacy from one compiler**: the facade codegen in
+`o9c/grammar.d/50-app-facade.y` wraps its `srvrelease`/`srvacquire` compat shim
+in `#ifndef O9_HAVE_SRVRELEASE`, and `o9build` probes the local `<9p.h>` at
+facade-build time — defining `O9_HAVE_SRVRELEASE` when the real lib9p API is
+visible (9front: requests interleave via the real `srvrelease`/`srvacquire`)
+and leaving it undefined otherwise (9legacy: the no-op shim is compiled in,
+since 9legacy's lib9p does not expose those symbols). The same `o9c`+`o9build`
+therefore works on both; nothing about the binary is 9legacy-specific. (The
+prebuilt in `release/386` must be rebuilt in-guest — `mk o9c` then copy `o9c`
+into `release/386/bin/` — to emit the guarded shim; an older prebuilt predating
+this change emits the shim unconditionally and soft-regresses 9front.)
+
+`-o9` is on by default (default path `../objective-9c`); the build skips it with
+a warning if that directory is absent, and errors if the directory exists but
+`release/386/` is missing (the prebuilt is required when the language repo is
+present). Pass `-o9 ''` to skip explicitly. Idempotent: re-runs overwrite in
+place. The bundled source tree at `/usr/glenda/src/objective-9c/` and the
+`/usr/glenda/o9legacy-smoke.rc` rebuild+verify harness remain in the base image
+for anyone who wants to rebuild the toolchain in-guest.

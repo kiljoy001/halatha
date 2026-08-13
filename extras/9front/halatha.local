@@ -1,0 +1,104 @@
+#!/bin/rc
+# halatha.local - optional local boot hook, backgrounded by termrc (the
+# "# halatha optional local boot hook" block mk9legacyimg installs).
+# Brings up Yggdrasil once the network is up and auto-injects public peers
+# so the node joins the global Yggdrasil mesh with no manual config -- a
+# terminal for a 9p grid. See extras/9front/README.md for the full picture.
+#
+# Peer CONNECTION (dialing tcp:// / tls:// peers) needs real outbound TCP.
+# That is page-side: launch with ?relay=wisp://host:port (or set WISP_RELAY
+# in the direct page) so v86 routes guest TCP via WebSocket to real TCP.
+# With the default fetch backend yggdrasil runs and gets an overlay address
+# but cannot reach peers. Under QEMU user networking the peers dial for real.
+#
+# rc has no break/continue builtins; the wait loops run their full count and
+# act only while the condition is unmet.
+
+if(! test -x /386/bin/yggdrasil){
+	echo 'halatha.local: /386/bin/yggdrasil not present; not starting'
+	exit 'no ygg'
+}
+
+# Wait for an IP interface to be bound (portable: v86 fetch DHCP gives
+# 192.168.86.100, QEMU SLIRP gives 10.0.2.15 -- either way an ipifc gets
+# bound once ipconfig succeeds). Backgrounded, so this never blocks rio/boot.
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60){
+	if(! test -e /net/ipifc/0/ctl)
+		sleep 1
+}
+if(! test -e /net/ipifc/0/ctl){
+	echo 'halatha.local: network did not come up; not starting yggdrasil'
+	exit 'no net'
+}
+
+# Config: use a bundled /lib/yggdrasil.conf if present (stable identity + your
+# own peers, added via mk9legacyimg -add src:/lib/yggdrasil.conf). Otherwise
+# generate a fresh random one each boot -- random key => unique node identity
+# per boot (no key-collision across distributed images), overlay address
+# rotates, which is fine for a terminal. Bundle a conf for a stable address.
+#
+# The generated conf goes to /tmp, NOT /lib, for two reasons. (1) /lib is on
+# the read-only root fs of a disk-booted image, so `yggdrasil -genconf >
+# /lib/yggdrasil.conf` silently fails -- the redirect target is unwritable,
+# the file is never created, and the second test below falls through to
+# "genconf failed". /tmp is a writable ramfs (we already log to
+# /tmp/yggdrasil.log below), so it takes the generated conf. (2) A per-boot
+# random key must NOT persist: writing it to /lib (if that were writable)
+# would leave it there for the next boot, so test -e would succeed and it
+# would never regenerate -- defeating "fresh random each boot". /tmp is
+# cleared each boot, so a per-boot conf there stays per-boot. /lib/
+# yggdrasil.conf remains the read-only bundled-stable-identity path.
+CONF=/lib/yggdrasil.conf
+if(! test -e $CONF){
+	CONF=/tmp/yggdrasil.conf
+	/386/bin/yggdrasil -genconf > $CONF
+	echo 'halatha.local: generated' $CONF '(random key)'
+}
+if(! test -e $CONF){
+	echo 'halatha.local: yggdrasil -genconf failed; not starting'
+	exit 'no conf'
+}
+
+# Start yggdrasil in the shared namespace (no rfork) so its pkt ipifc is
+# visible to all processes. Admin listener is tcp://localhost:9001
+# (yggdrasilctl). grep -v grep avoids self-match.
+if(ps | grep -v grep | grep -s yggdrasil){
+	echo 'halatha.local: yggdrasil already running'
+}
+if not{
+	/386/bin/yggdrasil -useconffile $CONF -logto /tmp/yggdrasil.log &
+	echo 'halatha.local: yggdrasil started (admin tcp://localhost:9001, log /tmp/yggdrasil.log)'
+}
+
+# Auto-inject public peers from /lib/yggdrasil.peers (bundled by mk9legacyimg
+# -ygg from extras/9front/yggdrasil.peers) so the node joins the mesh with no
+# manual config. Wait for the admin socket, then addPeer each non-comment line.
+# Peers added at runtime are not persisted, but we re-inject every boot.
+if(! test -r /lib/yggdrasil.peers){
+	exit ''
+}
+# wait for the admin listener (yggdrasilctl getSelf succeeds once it's up)
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40){
+	if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null)
+		sleep 1
+}
+if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null){
+	echo 'halatha.local: yggdrasil admin socket never came up; peers not injected'
+	exit 'no admin'
+}
+n=0
+# grep -s in Plan 9 means STATUS ONLY (no output), not error-suppress -- so
+# never combine -s with a list-producing grep. -e gives multiple patterns:
+# skip comments and blank lines. Backticks are why this is a real rc file.
+for(p in `{grep -v -e '^#' -e '^$' /lib/yggdrasil.peers}){
+	# yggdrasilctl takes key=value args (SplitN arg on '='), NOT bare positionals:
+	# a bare URI has no '=' so it's "Ignoring invalid argument" and uri="" ->
+	# addPeer fails. Pass 'uri='$p so the value is one literal arg "uri=<peer>".
+	# The '=' MUST be single-quoted: rc's lexer makes '=' a token delimiter and
+	# `name=value` is an assignment (syn.y `assign: first '=' word`), so an
+	# UNquoted uri=$p after the command is `cmd assign` -> syntax error.
+	# interface is optional (omitempty).
+	if(yggdrasilctl addPeer 'uri='$p >/dev/null >[2]/dev/null)
+		n=`{hoc -e $n^'+1'}
+}
+echo 'halatha.local: injected' $n 'peers from /lib/yggdrasil.peers'
