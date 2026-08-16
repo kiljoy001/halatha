@@ -150,8 +150,10 @@
         const runtime = _runtimeParam === "local" || _runtimeParam === "copysh"
             ? _runtimeParam
             : (params.get("host9pTransport") === "serial" ? "copysh" : "local");
-        const imageParam = params.get("image") || "original";
-        const imageName = imageParam === "halatha"
+        const imageParam = params.get("image") || "virtio9p";
+        const imageName = imageParam === "virtio9p" || imageParam === "virtio" || imageParam === "default"
+            ? "9legacy-wanix-virtio9p-full-usb.img"
+            : imageParam === "halatha"
             ? "9legacy-wanix-ygg-o9-halatha.img"
             : imageParam === "patched"
             ? "9legacy-wanix.img"
@@ -159,7 +161,7 @@
                 ? "9legacy-wanix-ygg.img"
                 : /^[A-Za-z0-9._-]+\.img$/.test(imageParam)
                     ? imageParam
-                    : "9legacy-copysh.img";
+                    : "9legacy-wanix-virtio9p-full-usb.img";
         const defaultDiskSize = imageName === "9legacy-wanix-virtio9p-full.img"
               || imageName === "9legacy-wanix-virtio9p-full-usb.img"
             ? 40894464
