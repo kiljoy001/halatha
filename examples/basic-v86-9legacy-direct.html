@@ -173,7 +173,7 @@
         const menuChoice = params.has("choice") ? params.get("choice") : "1";
         const menuDelay = Number(params.get("menuDelay") || 100);
         const asyncDisk = params.get("async") === "1";
-        const imageVersion = params.get("imgv") || "serial1";
+        const imageVersion = params.get("imgv") || "opt1";
         const netMode = params.get("net") === "none" ? "none" : "ne2k";
         // TCP bridge for the grid/Yggdrasil path. v86's "fetch" backend gives
         // the guest DHCP + HTTP but NO raw outbound TCP, so yggdrasil runs

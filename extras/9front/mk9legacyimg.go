@@ -961,7 +961,7 @@ func writeArchive(entries []archiveEntry) []byte {
 
 func gzipBytes(data []byte) ([]byte, error) {
 	var out bytes.Buffer
-	zw, err := gzip.NewWriterLevel(&out, gzip.BestCompression)
+	zw, err := gzip.NewWriterLevel(&out, gzip.BestSpeed)
 	if err != nil {
 		return nil, err
 	}
