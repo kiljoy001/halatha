@@ -170,10 +170,10 @@
             ? 32505856
             : 16000000;
         const diskSize = Number(params.get("size") || defaultDiskSize);
-        const menuChoice = params.has("choice") ? params.get("choice") : "1";
+        const menuChoice = params.has("choice") ? params.get("choice") : "none";
         const menuDelay = Number(params.get("menuDelay") || 100);
         const asyncDisk = params.get("async") === "1";
-        const imageVersion = params.get("imgv") || "opt1";
+        const imageVersion = params.get("imgv") || "opt3";
         const netMode = params.get("net") === "none" ? "none" : "ne2k";
         // TCP bridge for the grid/Yggdrasil path. v86's "fetch" backend gives
         // the guest DHCP + HTTP but NO raw outbound TCP, so yggdrasil runs
@@ -216,7 +216,7 @@
             if (override) return override;
             try {
                 const ctrl = new AbortController();
-                const to = setTimeout(() => ctrl.abort(), 200);
+                const to = setTimeout(() => ctrl.abort(), 1500);
                 const resp = await fetch("/.well-known/wanix", {
                     signal: ctrl.signal, cache: "no-store",
                 });
@@ -296,7 +296,7 @@
             },
             wasm_path: paths.wasm,
             memory_size: 512 * 1024 * 1024,
-            vga_memory_size: 8 * 1024 * 1024,
+            vga_memory_size: 16 * 1024 * 1024,
             hda: {
                 url: `../local/${imageName}?v=${encodeURIComponent(imageVersion)}`,
                 size: diskSize,

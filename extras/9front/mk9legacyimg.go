@@ -494,8 +494,11 @@ func patchPlan9INIContents(data []byte, menuDefault string, keepSerialConsole bo
 		// withSectionSetting is a no-op if a console= line is already present.
 		data = withSectionSetting(data, "common", "console", "0 b115200")
 	}
+	menuDefault = strings.Split(menuDefault, ",")[0]
 	data = withMenuDefault(data, menuDefault)
 	data = withSectionSetting(data, "menu", "menutimeout", "0")
+	data = withSectionSetting(data, "common", "vgasize", "1280x768x32")
+	data = withSectionSetting(data, "common", "monitor", "vesa")
 	// nousbboot must be set WITHOUT a '*' prefix. A '*' prefix lands the
 	// var in the kernel global env (#ec) as "*nousbboot" (main.c keeps the
 	// '*'), but boot's getenv("nousbboot") reads /env/nousbboot from the
@@ -1450,11 +1453,11 @@ if(! test -e /net/ether0)
 # bounded and non-blocking. Suppress stderr: v86's OFFER omits DHCP
 # option 51 (lease time), so ipconfig prints a benign "Offer with 0
 # lease, using 900" warning that would otherwise clutter the boot log.
-for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15){
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
 	if(! grep -s '192.168.86.100' /net/ipselftab)
 		ip/ipconfig >[2]/dev/null
 	if(! grep -s '192.168.86.100' /net/ipselftab)
-		sleep 1
+		sleep 2
 }
 
 if(! grep -s '192.168.86.100' /net/ipselftab)
