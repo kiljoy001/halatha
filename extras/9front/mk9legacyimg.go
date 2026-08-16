@@ -495,6 +495,7 @@ func patchPlan9INIContents(data []byte, menuDefault string, keepSerialConsole bo
 		data = withSectionSetting(data, "common", "console", "0 b115200")
 	}
 	data = withMenuDefault(data, menuDefault)
+	data = withSectionSetting(data, "menu", "menutimeout", "0")
 	// nousbboot must be set WITHOUT a '*' prefix. A '*' prefix lands the
 	// var in the kernel global env (#ec) as "*nousbboot" (main.c keeps the
 	// '*'), but boot's getenv("nousbboot") reads /env/nousbboot from the
@@ -1453,7 +1454,7 @@ for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15){
 	if(! grep -s '192.168.86.100' /net/ipselftab)
 		ip/ipconfig >[2]/dev/null
 	if(! grep -s '192.168.86.100' /net/ipselftab)
-		sleep 3
+		sleep 1
 }
 
 if(! grep -s '192.168.86.100' /net/ipselftab)

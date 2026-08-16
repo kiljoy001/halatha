@@ -169,7 +169,7 @@
             : 16000000;
         const diskSize = Number(params.get("size") || defaultDiskSize);
         const menuChoice = params.has("choice") ? params.get("choice") : "1";
-        const menuDelay = Number(params.get("menuDelay") || 3000);
+        const menuDelay = Number(params.get("menuDelay") || 100);
         const asyncDisk = params.get("async") === "1";
         const imageVersion = params.get("imgv") || "serial1";
         const netMode = params.get("net") === "none" ? "none" : "ne2k";
@@ -214,7 +214,7 @@
             if (override) return override;
             try {
                 const ctrl = new AbortController();
-                const to = setTimeout(() => ctrl.abort(), 2000);
+                const to = setTimeout(() => ctrl.abort(), 200);
                 const resp = await fetch("/.well-known/wanix", {
                     signal: ctrl.signal, cache: "no-store",
                 });
