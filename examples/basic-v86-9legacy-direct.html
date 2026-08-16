@@ -332,6 +332,125 @@
 
         const emulator = new V86(config);
 
+        // Hardware-accelerated WebGL display pipeline
+        initWebGLAccelerator(emulator, screenContainer);
+
+        function initWebGLAccelerator(emulator, container) {
+            const origCanvas = container.querySelector("canvas");
+            if (!origCanvas) return;
+
+            const glCanvas = document.createElement("canvas");
+            glCanvas.id = "v86_gl_canvas";
+            glCanvas.style.cssText = "display:block;width:100%;height:100%;image-rendering:pixelated;image-rendering:crisp-edges;";
+
+            const gl = glCanvas.getContext("webgl2", { alpha: false, antialias: false, powerPreference: "high-performance" }) ||
+                       glCanvas.getContext("webgl", { alpha: false, antialias: false, powerPreference: "high-performance" });
+            if (!gl) {
+                console.warn("WebGL not supported; falling back to Canvas2D");
+                return;
+            }
+
+            origCanvas.style.display = "none";
+            container.appendChild(glCanvas);
+
+            const vsSource = `
+                attribute vec2 a_pos;
+                varying vec2 v_uv;
+                void main() {
+                    gl_Position = vec4(a_pos, 0.0, 1.0);
+                    v_uv = vec2((a_pos.x + 1.0) * 0.5, (1.0 - a_pos.y) * 0.5);
+                }
+            `;
+            const fsSource = `
+                precision mediump float;
+                uniform sampler2D u_tex;
+                varying vec2 v_uv;
+                void main() {
+                    gl_FragColor = texture2D(u_tex, v_uv);
+                }
+            `;
+
+            function compileShader(type, src) {
+                const s = gl.createShader(type);
+                gl.shaderSource(s, src);
+                gl.compileShader(s);
+                return s;
+            }
+
+            const prog = gl.createProgram();
+            gl.attachShader(prog, compileShader(gl.VERTEX_SHADER, vsSource));
+            gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, fsSource));
+            gl.linkProgram(prog);
+            gl.useProgram(prog);
+
+            const posBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                -1, -1,  1, -1, -1,  1,
+                -1,  1,  1, -1,  1,  1,
+            ]), gl.STATIC_DRAW);
+
+            const aPos = gl.getAttribLocation(prog, "a_pos");
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+            const tex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+            let curW = 0, curH = 0;
+            let dirty = false;
+
+            function resize(w, h) {
+                if (curW === w && curH === h) return;
+                curW = w; curH = h;
+                glCanvas.width = w;
+                glCanvas.height = h;
+                gl.viewport(0, 0, w, h);
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+                dirty = true;
+            }
+
+            function render() {
+                if (dirty && curW > 0 && curH > 0) {
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+                    dirty = false;
+                }
+                requestAnimationFrame(render);
+            }
+            requestAnimationFrame(render);
+
+            if (emulator.screen_adapter) {
+                const origUpdate = emulator.screen_adapter.update_buffer;
+                emulator.screen_adapter.update_buffer = function(layers) {
+                    gl.bindTexture(gl.TEXTURE_2D, tex);
+                    for (const l of layers) {
+                        const img = l.image_data;
+                        if (!img) continue;
+                        const w = img.width;
+                        const h = img.height;
+                        const x = l.screen_x - l.buffer_x;
+                        const y = l.screen_y - l.buffer_y;
+                        if (curW < (x + w) || curH < (y + h)) {
+                            resize(Math.max(curW, x + w), Math.max(curH, y + h));
+                        }
+                        gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                        dirty = true;
+                    }
+                };
+
+                const origSetSize = emulator.screen_adapter.set_size_graphical;
+                emulator.screen_adapter.set_size_graphical = function(w, h, vw, vh) {
+                    resize(w, h);
+                    if (origSetSize) origSetSize.call(this, w, h, vw, vh);
+                };
+            }
+        }
+
         // The wanix namespace boots async; once ready, wire the Go 9P server to
         // the guest's serial port and start the browser-backed services.
         host.addEventListener("ready", () => {
