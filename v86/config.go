@@ -42,7 +42,8 @@ func parseFlags(args []string) (map[string]any, error) {
 		virtfs string
 
 		// Export device
-		export string
+		export      string
+		webglScreen bool
 	)
 	f := flag.NewFlagSet("v86", flag.ContinueOnError)
 	f.StringVar(&export, "export", "", "Set device to exporthost over")
@@ -63,6 +64,7 @@ func parseFlags(args []string) (map[string]any, error) {
 	f.StringVar(&netdev, "netdev", "", "Network device type (e.g. ne2k, virtio)")
 	f.StringVar(&relay, "relay", "", "Network relay URL (e.g. wisp://host:port for real TCP)")
 	f.StringVar(&virtfs, "virtfs", "", "VirtFS configuration")
+	f.BoolVar(&webglScreen, "webgl-screen", false, "Use WebGL for the v86 VGA screen adapter")
 	if err := f.Parse(args); err != nil {
 		return nil, err
 	}
@@ -87,6 +89,9 @@ func parseFlags(args []string) (map[string]any, error) {
 		// Keep serial0 available for boot/console chatter; Halatha's host 9P
 		// bridge uses COM2 (/dev/eia1) so the 9P byte stream stays clean.
 		cfg["uart1"] = true
+	}
+	if webglScreen {
+		cfg["_webgl_screen"] = true
 	}
 
 	// Disk / BIOS options. URLs become v86 async range-loaded images; bare

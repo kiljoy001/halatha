@@ -16,9 +16,13 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
 
     this.screen_fill_buffer = screen_fill_buffer;
 
+    const use_webgl = typeof self !== "undefined" && self.HALATHA_WEBGL_SCREEN === true;
+
     var
         current_canvas = canvas,
-        graphic_context = canvas.getContext("2d", { alpha: false }),
+        gl_renderer = use_webgl ? makeWebGLRenderer(canvas) : null,
+        backing_canvas = gl_renderer ? new OffscreenCanvas(canvas.width || 1, canvas.height || 1) : canvas,
+        graphic_context = backing_canvas.getContext("2d", { alpha: false }),
 
         /** @type {number} */
         cursor_row = 0,
@@ -124,6 +128,10 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
                 text_mode_dirty[row] = 0;
             }
         }
+        if(gl_renderer)
+        {
+            gl_renderer.present(backing_canvas);
+        }
     };
 
     this.destroy = function()
@@ -177,6 +185,11 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
 
     this.clear_screen = function()
     {
+        if(is_graphical && gl_renderer)
+        {
+            gl_renderer.clear();
+            return;
+        }
         graphic_context.fillStyle = "#000";
         graphic_context.fillRect(0, 0, current_canvas.width, current_canvas.height);
         if(text_mode_dirty)
@@ -211,7 +224,9 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
     {
         current_canvas.width = text_mode_width * text_mode_font_width;
         current_canvas.height = text_mode_height * text_mode_font_height;
-        graphic_context = current_canvas.getContext("2d", { alpha: false });
+        backing_canvas.width = current_canvas.width;
+        backing_canvas.height = current_canvas.height;
+        graphic_context = backing_canvas.getContext("2d", { alpha: false });
         graphic_context.imageSmoothingEnabled = false;
         graphic_context.textBaseline = "top";
         graphic_context.font = text_mode_font_height + "px monospace";
@@ -224,8 +239,11 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
 
         current_canvas.width = width;
         current_canvas.height = height;
+        backing_canvas.width = width;
+        backing_canvas.height = height;
 
         // graphic_context must be reconfigured whenever canvas is resized
+        graphic_context = backing_canvas.getContext("2d", { alpha: false });
         graphic_context.imageSmoothingEnabled = false;
     };
 
@@ -296,6 +314,11 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
 
     this.update_buffer = function(layers)
     {
+        if(gl_renderer && is_graphical)
+        {
+            gl_renderer.update(layers);
+            return;
+        }
         for(const layer of layers)
         {
             graphic_context.putImageData(
@@ -354,13 +377,17 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
         console.assert(new_canvas, "OffscreenCanvas must be provided");
 
         current_canvas = new_canvas;
-        graphic_context = new_canvas.getContext("2d", { alpha: false });
+        gl_renderer = use_webgl ? makeWebGLRenderer(new_canvas) : null;
+        backing_canvas = gl_renderer ? new OffscreenCanvas(new_canvas.width || 1, new_canvas.height || 1) : new_canvas;
+        graphic_context = backing_canvas.getContext("2d", { alpha: false });
 
         // Apply current dimensions to new canvas
         if(is_graphical && graphical_mode_width && graphical_mode_height)
         {
             current_canvas.width = graphical_mode_width;
             current_canvas.height = graphical_mode_height;
+            backing_canvas.width = graphical_mode_width;
+            backing_canvas.height = graphical_mode_height;
         }
         else
         {
@@ -370,6 +397,161 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
 
         graphic_context.imageSmoothingEnabled = false;
     };
+
+    function makeWebGLRenderer(canvas)
+    {
+        const gl = canvas.getContext("webgl", {
+            alpha: false,
+            antialias: false,
+            depth: false,
+            preserveDrawingBuffer: true,
+            premultipliedAlpha: false,
+            stencil: false,
+        });
+        if(!gl)
+        {
+            return null;
+        }
+
+        const vertex = compile(gl.VERTEX_SHADER, `
+            attribute vec2 a_pos;
+            attribute vec2 a_uv;
+            varying vec2 v_uv;
+            void main() {
+                gl_Position = vec4(a_pos, 0.0, 1.0);
+                v_uv = a_uv;
+            }
+        `);
+        const fragment = compile(gl.FRAGMENT_SHADER, `
+            precision mediump float;
+            varying vec2 v_uv;
+            uniform sampler2D u_tex;
+            void main() {
+                gl_FragColor = texture2D(u_tex, v_uv);
+            }
+        `);
+        if(!vertex || !fragment)
+        {
+            return null;
+        }
+
+        const program = gl.createProgram();
+        gl.attachShader(program, vertex);
+        gl.attachShader(program, fragment);
+        gl.linkProgram(program);
+        if(!gl.getProgramParameter(program, gl.LINK_STATUS))
+        {
+            console.warn("OffscreenScreenAdapter: WebGL link failed", gl.getProgramInfoLog(program));
+            return null;
+        }
+
+        const posLoc = gl.getAttribLocation(program, "a_pos");
+        const uvLoc = gl.getAttribLocation(program, "a_uv");
+        const samplerLoc = gl.getUniformLocation(program, "u_tex");
+        const vertexBuffer = gl.createBuffer();
+        const texture = gl.createTexture();
+        const verts = new Float32Array(24);
+
+        gl.useProgram(program);
+        gl.uniform1i(samplerLoc, 0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+
+        function compile(type, source)
+        {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+            {
+                console.warn("OffscreenScreenAdapter: WebGL shader failed", gl.getShaderInfoLog(shader));
+                return null;
+            }
+            return shader;
+        }
+
+        function ndcX(x)
+        {
+            return x / canvas.width * 2 - 1;
+        }
+
+        function ndcY(y)
+        {
+            return 1 - y / canvas.height * 2;
+        }
+
+        return {
+            clear()
+            {
+                gl.viewport(0, 0, canvas.width, canvas.height);
+                gl.clearColor(0, 0, 0, 1);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+            },
+            present(source)
+            {
+                gl.viewport(0, 0, canvas.width, canvas.height);
+                this.drawSource(source, 0, 0, source.width, source.height, 0, 0, canvas.width, canvas.height);
+                gl.flush();
+            },
+            update(layers)
+            {
+                gl.viewport(0, 0, canvas.width, canvas.height);
+
+                for(const layer of layers)
+                {
+                    const img = layer.image_data;
+                    this.drawSource(
+                        img,
+                        layer.buffer_x,
+                        layer.buffer_y,
+                        layer.buffer_width,
+                        layer.buffer_height,
+                        layer.screen_x,
+                        layer.screen_y,
+                        layer.buffer_width,
+                        layer.buffer_height
+                    );
+                }
+                gl.flush();
+            },
+            drawSource(source, sx, sy, sw, sh, dx, dy, dw, dh)
+            {
+                const x0 = dx;
+                const y0 = dy;
+                const x1 = dx + dw;
+                const y1 = dy + dh;
+                const u0 = sx / source.width;
+                const v0 = sy / source.height;
+                const u1 = (sx + sw) / source.width;
+                const v1 = (sy + sh) / source.height;
+
+                gl.useProgram(program);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.enableVertexAttribArray(posLoc);
+                gl.enableVertexAttribArray(uvLoc);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
+                gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 16, 8);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+                verts.set([
+                    ndcX(x0), ndcY(y0), u0, v0,
+                    ndcX(x1), ndcY(y0), u1, v0,
+                    ndcX(x0), ndcY(y1), u0, v1,
+                    ndcX(x0), ndcY(y1), u0, v1,
+                    ndcX(x1), ndcY(y0), u1, v0,
+                    ndcX(x1), ndcY(y1), u1, v1,
+                ]);
+                gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STREAM_DRAW);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            },
+        };
+    }
 
     function color(value)
     {

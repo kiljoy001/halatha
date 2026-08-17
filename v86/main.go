@@ -36,6 +36,14 @@ func main() {
 		}
 		delete(opts, "_diskboot")
 	}
+	webglScreen := false
+	if v, ok := opts["_webgl_screen"]; ok {
+		if b, _ := v.(bool); b {
+			webglScreen = true
+		}
+		delete(opts, "_webgl_screen")
+	}
+	js.Global().Get("self").Set("HALATHA_WEBGL_SCREEN", webglScreen)
 
 	// Resolve disk/BIOS options given as namespace paths into in-memory
 	// buffers. URL options are already v86 async range-loaded images.

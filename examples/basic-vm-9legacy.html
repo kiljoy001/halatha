@@ -1,7 +1,6 @@
 <html>
 <head>
     <title>basic-vm-9legacy</title>
-    <script type="module" src="/dist/wanix.min.js?v=screen-handshake"></script>
     <style>
         html,
         body,
@@ -55,7 +54,12 @@
     <!--
         Boot 9legacy (Plan 9 from Bell Labs, 386) to rio in the browser.
 
-        This uses the patched local image produced by:
+        This defaults to the rich virtio-9p local image:
+
+            local/9legacy-wanix-virtio9p-full-usb.img
+
+        The older Halatha image can still be selected with `?image=halatha`.
+        That image is produced by:
 
             go run extras/9front/mk9legacyimg.go \
                 -base ~/Downloads/9legacy-copysh.img \
@@ -96,11 +100,11 @@
         <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
 
         <wanix-bind dst="#vm/v86" type="archive"
-            src="/extras/dist/v86.tgz?v=serial1">
+            src="/extras/dist/v86.tgz?v=screen-fallback5">
         </wanix-bind>
 
         <wanix-vm id="vm"
-            hda="/local/9legacy-wanix-ygg-o9-halatha.img?v=serial1"
+            hda="/local/9legacy-wanix-virtio9p-full-usb.img?v=vesa-menufix1"
             netdev="ne2k" relay="fetch"
             boot="c" mem="512M"
             screen start
@@ -133,19 +137,77 @@
     <div id="host-status">halatha host namespace starting</div>
     <div id="host-downloads"></div>
 
+    <script>
+        (() => {
+            const params = new URLSearchParams(location.search);
+            const imageParam = params.get("image") || "virtio9p";
+            const imageName = imageParam === "virtio9p" || imageParam === "virtio" || imageParam === "default"
+                ? "9legacy-wanix-virtio9p-full-usb.img"
+                : imageParam === "halatha"
+                ? "9legacy-wanix-ygg-o9-halatha.img"
+                : imageParam === "patched"
+                ? "9legacy-wanix.img"
+                : imageParam === "ygg"
+                    ? "9legacy-wanix-ygg.img"
+                    : /^[A-Za-z0-9._-]+\.img$/.test(imageParam)
+                        ? imageParam
+                        : "9legacy-wanix-virtio9p-full-usb.img";
+            const imageVersion = params.get("imgv") || "vesa-menufix1";
+            const vm = document.getElementById("vm");
+            vm.setAttribute("hda", `/local/${imageName}?v=${encodeURIComponent(imageVersion)}`);
+            if (params.get("relay")) {
+                vm.setAttribute("relay", params.get("relay"));
+            }
+            if (params.get("net") === "none") {
+                vm.removeAttribute("netdev");
+                vm.removeAttribute("relay");
+            }
+        })();
+    </script>
+
     <script type="module">
         const enc = new TextEncoder();
         const dec = new TextDecoder();
         const status = document.getElementById("host-status");
         const downloads = document.getElementById("host-downloads");
         const vm = document.getElementById("vm");
+        window.addEventListener("error", (event) => {
+            status.textContent = `page error: ${event.message}`;
+            console.error(event.error || event.message);
+        });
+        window.addEventListener("unhandledrejection", (event) => {
+            const reason = event.reason && (event.reason.stack || event.reason.message || event.reason);
+            status.textContent = `page rejection: ${reason}`;
+            console.error(event.reason);
+        });
+        const legacy = document.getElementById("legacy");
+        legacy.addEventListener("error", (event) => {
+            status.textContent = `namespace error: ${event.detail || event.message || "unknown"}`;
+            console.error("namespace error", event);
+        });
 
-        document.getElementById("legacy").addEventListener("ready", () => {
+        let servicesStarted = false;
+        function startServicesOnce() {
+            if (servicesStarted) {
+                return;
+            }
+            servicesStarted = true;
             startHalathaNamespaceServices().catch((err) => {
                 console.error("halatha namespace services:", err);
                 status.textContent = "halatha host namespace failed";
             });
-        });
+        }
+
+        legacy.addEventListener("ready", startServicesOnce);
+        if (legacy._kernel?.isReady) {
+            startServicesOnce();
+        } else {
+            customElements.whenDefined("wanix-namespace").then(() => {
+                if (legacy._kernel?.isReady) {
+                    startServicesOnce();
+                }
+            });
+        }
 
         async function startHalathaNamespaceServices() {
             const root = await waitForTaskRoot();
@@ -285,6 +347,7 @@
             return new Promise((resolve) => setTimeout(resolve, ms));
         }
     </script>
+    <script type="module" src="/dist/wanix.min.js?v=screen-fallback6"></script>
 
 </body>
 </html>

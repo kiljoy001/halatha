@@ -47,9 +47,14 @@ export class VMElement extends WanixElement {
         [
             "export", "mem", "vga-mem", "hda", "hdb", "fda", "fdb", "cdrom",
             "boot", "bios", "acpi", "fastboot", "kernel", "initrd", "netdev", "relay", "virtfs",
+            "webgl-screen",
         ].forEach((attr) => {
-            if (this.hasAttribute(attr)) {
+            if (this.hasAttribute(attr) || (attr === "webgl-screen" && new URLSearchParams(location.search).get("webgl-screen") === "1")) {
                 let value = this.getAttribute(attr);
+                if (attr === "webgl-screen") {
+                    args.push(`-${attr}`);
+                    return;
+                }
                 if (urlAttrs.has(attr)) {
                     value = normalizeVMURL(value);
                 }
