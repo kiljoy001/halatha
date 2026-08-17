@@ -242,7 +242,7 @@
         const mib = (bytes) => (bytes / 1024 / 1024).toFixed(1) + " MiB";
         const V86 = runtime === "copysh"
             ? await loadCopyshRuntime()
-            : (await import("../v86/lib/libv86.mjs")).V86;
+            : (await import("../v86/lib/libv86.mjs?v=webgl1")).V86;
         const paths = runtime === "copysh" ? {
             wasm: "../local/copysh-v86/build/v86.wasm",
             bios: "../local/copysh-v86/bios/seabios.bin",
@@ -283,10 +283,18 @@
             }
         }
 
+        // ?webgl=1 blits graphical mode through a GPU texture (v86's
+        // ScreenAdapter + src/browser/screen_webgl.js) instead of
+        // putImageData. The guest is untouched: 9legacy still renders into
+        // the VESA linear framebuffer, this only changes how the page draws
+        // the dirty rectangles v86 hands us. Falls back to 2d automatically
+        // if WebGL2 is unavailable.
+        const useWebGL = params.get("webgl") === "1";
         const config = {
             screen: {
                 container: screenContainer,
                 use_graphical_text: false,
+                use_webgl: useWebGL,
             },
             bios: {
                 url: paths.bios,

@@ -38,7 +38,7 @@ func main() {
 		// SourcesContent:    api.SourcesContentExclude,
 		// Platform:          api.PlatformBrowser,
 		Outfile:  "lib.js",
-		External: []string{"crypto", "util", "node:crypto", "node:fs/promises", "perf_hooks"},
+		External: []string{"crypto", "fs", "util", "node:crypto", "node:fs/promises", "perf_hooks"},
 		LogLevel: api.LogLevelInfo,
 	}
 
