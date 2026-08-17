@@ -462,6 +462,27 @@ func patchPlan9INI(img []byte, lay layout, menuDefault string, keepSerialConsole
 	return errors.New("PLAN9.INI not found in 9fat")
 }
 
+// withoutLinePrefix drops every line starting with prefix.
+func withoutLinePrefix(data []byte, prefix string) []byte {
+	var out bytes.Buffer
+	for len(data) > 0 {
+		nl := bytes.IndexByte(data, '\n')
+		var line []byte
+		if nl < 0 {
+			line = data
+			data = nil
+		} else {
+			line = data[:nl+1]
+			data = data[nl+1:]
+		}
+		if bytes.HasPrefix(bytes.TrimRight(line, "\r\n"), []byte(prefix)) {
+			continue
+		}
+		out.Write(line)
+	}
+	return out.Bytes()
+}
+
 func withoutSerialConsole(data []byte) []byte {
 	const drop = "console=0 b115200"
 	var out bytes.Buffer
@@ -494,10 +515,22 @@ func patchPlan9INIContents(data []byte, menuDefault string, keepSerialConsole bo
 		// withSectionSetting is a no-op if a console= line is already present.
 		data = withSectionSetting(data, "common", "console", "0 b115200")
 	}
-	menuDefault = strings.Split(menuDefault, ",")[0]
+	// menudefault carries its timeout as a comma suffix ("item,secs"):
+	// pcboot/conf.c parses it with comma() and only then sets mtimeout, so
+	// stripping the suffix leaves mtimeout at 0 and the menu blocks forever
+	// waiting for a keypress. Keep the value intact.
+	//
+	// There is no menutimeout key in 9legacy (it is a 9front spelling).
+	// conf.c's [menu] parser treats any unrecognised line as fatal --
+	// "invalid line in [menu] block" -- and returns without applying
+	// menudefault at all, so emitting it breaks menu selection outright.
+	data = withoutLinePrefix(data, "menutimeout=")
 	data = withMenuDefault(data, menuDefault)
-	data = withSectionSetting(data, "menu", "menutimeout", "0")
-	data = withSectionSetting(data, "common", "vgasize", "1280x768x32")
+	// vgasize belongs to the per-resolution menu sections only. parsemenu()
+	// concatenates the selected block with [common], and getconf() prompts
+	// interactively (getstr with no default and no timeout) whenever a key
+	// matches more than once -- an unattended hang in the browser. So never
+	// add a [common] vgasize alongside the menu's own.
 	data = withSectionSetting(data, "common", "monitor", "vesa")
 	// nousbboot must be set WITHOUT a '*' prefix. A '*' prefix lands the
 	// var in the kernel global env (#ec) as "*nousbboot" (main.c keeps the
