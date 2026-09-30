@@ -5,6 +5,9 @@
 /wanix
 /local
 /.local
+/out
+# Private deployment notes and service files for specific machines.
+/extras/deployment/
 /examples/dev.html
 /rc/rc
 /rc/rc.wasm

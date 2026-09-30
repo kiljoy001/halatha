@@ -18,6 +18,8 @@ LINK_BIN 		?= /usr/local/bin
 DIST_DIR		?= dist
 DIST_OS			?= darwin windows linux
 DIST_ARCH		?= arm64 amd64
+RELEASE_DIR		?= out/release
+RELEASE_PAGE	?= examples/basic-v86-9front-direct.html
 
 EXAMPLE_DEPS 	:= dist/wanix.debug.wasm dist/wanix.min.js workbench/code extras/dist/wanix-linux.tgz test/gojs/gojscheck.wasm
 
@@ -33,6 +35,21 @@ link:
 all: js wasm cmd
 .PHONY: all
 
+## Run full Halatha VM image setup and calibration
+vm-setup:
+	@./extras/setup-vm.sh --all
+.PHONY: vm-setup
+
+## Build and patch lean Halatha VM image (fast 2s boot)
+vm-lean:
+	@./extras/setup-vm.sh --lean
+.PHONY: vm-lean
+
+## Patch existing VM disk images for v86 timer calibration
+vm-patch:
+	@./extras/setup-vm.sh --patch-only
+.PHONY: vm-patch
+
 ## Build and run examples
 examples: $(EXAMPLE_DEPS)
 	@for dir in $(shell find examples -type f -iname '[mM]akefile' -exec dirname {} \;); do \
@@ -40,6 +57,14 @@ examples: $(EXAMPLE_DEPS)
 	done
 	go run ./examples/serve.go
 .PHONY: examples
+
+## Build the deployable web root in RELEASE_DIR (see release.manifest)
+# The runtime is rebuilt (wasm-go, -trimpath) so no workstation paths ship,
+# and mkrelease refuses to write a release containing anything it should not.
+release: js wasm-go
+	rm -rf $(RELEASE_DIR)
+	go run ./cmd/mkrelease -page $(RELEASE_PAGE) -out $(RELEASE_DIR)
+.PHONY: release
 
 ## Run tests against examples
 smoketest: $(EXAMPLE_DEPS)
@@ -89,7 +114,7 @@ wasm-tinygo: wasi/worker/lib.js
 
 ## Build WASM module using Go
 wasm-go: wasi/worker/lib.js
-	GOOS=js GOARCH=wasm go build \
+	GOOS=js GOARCH=wasm go build -trimpath \
 		-ldflags="-X tractor.dev/wanix.Version=$(VERSION)" \
 		-o $(DIST_DIR)/wanix.debug.wasm \
 		./wasm

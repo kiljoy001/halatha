@@ -16,7 +16,6 @@ import (
 	"syscall/js"
 	"time"
 
-	"github.com/hugelgupf/p9/p9"
 	"tractor.dev/toolkit-go/duplex/mux"
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/api"
@@ -24,7 +23,6 @@ import (
 	"tractor.dev/wanix/fs/cowfs"
 	"tractor.dev/wanix/fs/httpfs"
 	"tractor.dev/wanix/fs/memfs"
-	"tractor.dev/wanix/fs/p9kit"
 	"tractor.dev/wanix/fs/p9p"
 	"tractor.dev/wanix/fs/pipe"
 	"tractor.dev/wanix/fs/signal"
@@ -174,6 +172,9 @@ func main() {
 		return ch.Get("port2")
 	}))
 
+	// _open9P serves a task's namespace over 9P2000 on a message-per-post
+	// channel: v86's virtio-9p device and cross-origin namespace imports use
+	// it. 9P2000 is the only dialect wanix speaks.
 	el.Set("_open9P", js.FuncOf(func(this js.Value, args []js.Value) any {
 		ch := NewP9Channel()
 
@@ -185,21 +186,17 @@ func main() {
 					task = t
 				}
 			}
-			var o []p9.ServerOpt
-			// o = append(o, p9.WithServerLogger(ulog.Log))
-			srv := p9.NewServer(p9kit.Attacher(task.NS(), p9kit.WithMemAttrStore()), o...)
-			if err := srv.Handle(ch.Reader(), ch.Writer()); err != nil {
-				log.Fatal(err)
+			if err := p9p.Serve(task.NS(), ch.Reader(), ch.Writer()); err != nil {
+				log.Println("p9p serve:", err)
 			}
 		}()
 
 		return ch.Port()
 	}))
 
-	// _open9P2000 serves a task's namespace over the original 9P2000 dialect
-	// (what a 9front guest speaks), over a transparent byte-stream MessagePort.
-	// The v86 worker relays serial0 to this port so 9front can mount the host
-	// namespace. Contrast _open9P, which serves 9P2000.L for the Linux guest.
+	// _open9P2000 serves a task's namespace over 9P2000 on a transparent
+	// byte-stream MessagePort. The v86 worker relays a guest serial line to
+	// this port so a Plan 9 guest can mount the host namespace.
 	el.Set("_open9P2000", js.FuncOf(func(this js.Value, args []js.Value) any {
 		ch := js.Global().Get("MessageChannel").New()
 		rw := NewP9PortReadWriter(ch.Get("port1"))
@@ -300,6 +297,7 @@ func main() {
 
 				optsObj := binding.Get("opts")
 				var opts []fs.BindOption
+				optional := false
 				if optsObj.Truthy() && optsObj.InstanceOf(js.Global().Get("Object")) {
 					keys := js.Global().Get("Object").Call("keys", optsObj)
 					for i := 0; i < keys.Length(); i++ {
@@ -308,6 +306,10 @@ func main() {
 							k = strings.ToLower(k[:1]) + k[1:]
 						}
 						v := optsObj.Get(keys.Index(i).String()).String()
+						if k == "optional" && v != "" && v != "0" && v != "false" {
+							optional = true
+							continue
+						}
 						opts = append(opts, fs.BindOption(fmt.Sprintf("%s=%s", k, v)))
 
 					}
@@ -396,16 +398,36 @@ func main() {
 					v, err := jsutil.AwaitErr(binding.Get("import"))
 					if err != nil {
 						log.Println("error importing", err)
+						if optional {
+							continue
+						}
+						reject.Invoke(js.Global().Get("Error").New(err.Error()))
 						return
 					}
 					conn := misc.NewFakeConn(NewP9PortReadWriter(v))
-					fsys, err := p9kit.ClientFS(conn, "")
+					var fsys fs.FS
+					switch protocol := binding.Get("protocol").String(); protocol {
+					case "9P2000", "", "<undefined>":
+						fsys, err = p9p.ClientFS(conn, binding.Get("user").String(), binding.Get("aname").String())
+					default:
+						err = fmt.Errorf("unsupported import protocol %q: wanix speaks 9P2000 only", protocol)
+					}
 					if err != nil {
+						conn.Close()
 						log.Println("error creating client for import", err)
+						if optional {
+							continue
+						}
+						reject.Invoke(js.Global().Get("Error").New(err.Error()))
 						return
 					}
 					if err := task.NS().Bind(fsys, ".", dst); err != nil {
+						conn.Close()
 						log.Println("error binding import", err)
+						if optional {
+							continue
+						}
+						reject.Invoke(js.Global().Get("Error").New(err.Error()))
 						return
 					}
 					log.Println("imported in", time.Since(t))

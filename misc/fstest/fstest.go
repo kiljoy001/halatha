@@ -10,9 +10,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/hugelgupf/p9/p9"
-	"github.com/u-root/uio/ulog"
-	"tractor.dev/wanix/fs/p9kit"
+	"tractor.dev/wanix/fs/p9p"
 )
 
 func RunFor(ctx context.Context, fsys fs.FS, tags string, p9debug bool) error {
@@ -39,14 +37,25 @@ func RunFor(ctx context.Context, fsys fs.FS, tags string, p9debug bool) error {
 	return RunTester(ctx, addr, cmd)
 }
 
+// ServeFor serves fsys over 9P2000 on every connection to l until l is
+// closed. p9debug logs each session.
 func ServeFor(ctx context.Context, l net.Listener, fsys fs.FS, p9debug bool) error {
 	defer l.Close()
-	var opts []p9.ServerOpt
-	if p9debug {
-		opts = append(opts, p9.WithServerLogger(ulog.Log))
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			return err
+		}
+		go func() {
+			defer c.Close()
+			if p9debug {
+				log.Println("fstest: 9P2000 session from", c.RemoteAddr())
+			}
+			if err := p9p.Serve(fsys, c, c); err != nil && p9debug {
+				log.Println("fstest: 9P2000 session ended:", err)
+			}
+		}()
 	}
-	srv := p9.NewServer(p9kit.Attacher(fsys), opts...)
-	return srv.Serve(l)
 }
 
 func RunTester(ctx context.Context, addr string, cmd string) error {

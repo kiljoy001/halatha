@@ -1,86 +1,139 @@
 #!/bin/rc
-# ygg-up.rc - start Yggdrasil on demand in the running guest, no manual config.
-# Installed by mk9legacyimg -ygg as /rc/bin/ygg-up; run it by name (`ygg-up`) to
-# (re)start Yggdrasil without rebooting. Mirrors the /rc/bin/halatha.local boot
-# hook, which auto-runs the same logic at boot -- kept separate so you can
-# re-run after killing yggdrasil or editing peers.
-#
-# Config: /lib/yggdrasil.conf if bundled (stable identity, added via mk9legacyimg
-# -add src:/lib/yggdrasil.conf) else a fresh random one in /tmp. /lib sits on
-# the read-only root fs of a disk-booted image (so > /lib/yggdrasil.conf fails
-# silently), and a per-boot random key must not persist (else it stops being
-# per-boot), so the generated conf goes to /tmp, a writable ramfs cleared each
-# boot. /lib/yggdrasil.conf stays the bundled-stable-identity path.
-#
-# Peer CONNECTION (dialing tcp:// / tls://) needs real outbound TCP, which the
-# browser sandbox cannot open: launch the page with ?relay=wisp://host:port
-# (or set WISP_RELAY) so v86 routes guest TCP via the WISP relay to real TCP.
-# With the default fetch backend yggdrasil runs and gets an overlay address but
-# cannot reach peers.
-#
-# rc has no break/continue builtins; the wait loops run their full count and
-# act only while the condition is unmet.
+LOG=/tmp/ygg-start.log
+ADMIN=tcp://127.0.0.1:9001
 
-if(! test -x /386/bin/yggdrasil){
-	echo 'ygg-up: /386/bin/yggdrasil not present; not starting'
+fn ylog {
+	echo $* >>$LOG
+}
+
+fn have_loopback {
+	grep -s '127.0.0.1' /net/ipselftab
+}
+
+fn loopback {
+	if(! have_loopback)
+		ip/ipconfig loopback /dev/null 127.1 /128 >>$LOG >[2=1]
+	if(! have_loopback)
+		ylog 'ygg-up: loopback 127.0.0.1 not configured'
+}
+
+# Rewrite the generated config with our AdminListen. The old version did
+# this with `grep -v '^[ 	]*[{][ 	]*$'` to drop the opening brace -- but
+# that pattern ALSO matched the nested `{` inside the MulticastInterfaces
+# array, leaving its closing `}` unbalanced. HJSON then failed to parse and
+# yggdrasil panicked in cfg.ReadFrom (cmd/yggdrasil/main.go:116), which is
+# why the daemon served the admin socket for a moment and then died.
+#
+# sed 1d removes only the FIRST line, which is the one real opening brace.
+fn yggconf {
+	src=$1
+	dst=$2
+	{
+		echo '{'
+		echo '  AdminListen: tcp://127.0.0.1:9001'
+		grep -v '^[ 	]*AdminListen:' $src | sed 1d
+	} >$dst
+}
+
+ylog 'ygg-up: starting'
+
+# yggdrasil is demand-loaded from libtab (~18MB, not baked into the image);
+# halatha-bind unions /n/host/bin into /386/bin. Install each SEPARATELY:
+# gating both on yggdrasil alone left yggdrasilctl unfetched once it existed.
+if(test -x /rc/bin/pkg){
+	for(b in yggdrasil yggdrasilctl){
+		if(! test -x /386/bin/$b){
+			ylog 'ygg-up: installing '^$b^' from libtab'
+			pkg install $b >[2]/dev/null
+		}
+	}
+}
+
+# Copy to local storage before running. /386/bin/yggdrasil is a union entry
+# backed by /n/host/bin -- a 9P mount to the browser. Plan 9 demand-pages
+# executables, so a daemon run from there keeps faulting text pages over 9P
+# for its whole life: it came up, served the admin socket, took 42 peers,
+# then died on code that was not yet resident. /tmp is local RAM.
+YGG=/tmp/yggdrasil.bin
+if(! test -x $YGG){
+	if(test -x /386/bin/yggdrasil){
+		cp /386/bin/yggdrasil $YGG
+		chmod +x $YGG
+		ylog 'ygg-up: staged yggdrasil to' $YGG
+	}
+}
+if(! test -x $YGG){
+	ylog 'ygg-up: /386/bin/yggdrasil not present'
 	exit 'no ygg'
 }
 
-# Net should be up by the time you run this post-boot; wait briefly anyway.
 for(i in 1 2 3 4 5 6 7 8 9 10){
 	if(! test -e /net/ipifc/0/ctl)
 		sleep 1
 }
 if(! test -e /net/ipifc/0/ctl){
-	echo 'ygg-up: network did not come up; ipconfig first'
+	ylog 'ygg-up: network did not come up'
 	exit 'no net'
 }
+
+loopback
 
 CONF=/lib/yggdrasil.conf
 if(! test -e $CONF){
 	CONF=/tmp/yggdrasil.conf
-	/386/bin/yggdrasil -genconf > $CONF
-	echo 'ygg-up: generated' $CONF '(random key)'
+	tmp=/tmp/yggdrasil.conf.raw
+	$YGG -genconf >$tmp
+	if(test -e $tmp)
+		cp $tmp $CONF
+	ylog 'ygg-up: generated' $CONF
 }
 if(! test -e $CONF){
-	echo 'ygg-up: yggdrasil -genconf failed; not starting'
+	ylog 'ygg-up: config missing'
 	exit 'no conf'
 }
 
-# Start in the shared namespace (no rfork) so its pkt ipifc is visible to all
-# processes. Admin listener is tcp://localhost:9001 (yggdrasilctl).
-if(ps | grep -v grep | grep -s yggdrasil){
-	echo 'ygg-up: yggdrasil already running'
-}
-if not{
-	/386/bin/yggdrasil -useconffile $CONF -logto /tmp/yggdrasil.log &
-	echo 'ygg-up: yggdrasil started (admin tcp://localhost:9001, log /tmp/yggdrasil.log)'
+RUNCONF=/tmp/yggdrasil.run.conf
+yggconf $CONF $RUNCONF
+if(! test -e $RUNCONF){
+	ylog 'ygg-up: runtime config missing'
+	exit 'no runconf'
 }
 
-# Auto-inject public peers from /lib/yggdrasil.peers (bundled by mk9legacyimg
-# -ygg). Peers added at runtime are not persisted, but we re-inject each run.
-if(! test -r /lib/yggdrasil.peers){
-	echo 'ygg-up: no /lib/yggdrasil.peers; peers not injected'
-	exit ''
+# A panicking process is NOT reaped on Plan 9: pexit calls addbroken(up)
+# and sets the proc state to Broken (9/port/proc.c), so the corpse stays in
+# proc table and in `ps` until reboot. A name-only guard therefore matches
+# those corpses and reports "already running" forever after the first
+# crash, refusing to ever start a live daemon again -- which is exactly why
+# getPeers showed every peer down.
+#
+# ps prints the state as argv[2] and the name as argv[0] (cmd/ps.c), so
+# filter the dead states out before deciding. Note the name is NOT
+# truncated: the %-8.8s in ps.c applies to the state field.
+fn ygglive {
+	ps | grep yggdrasi | grep -v -e Broken -e Dead -e Moribund | grep -s . >/dev/null
 }
-# wait for the admin listener (yggdrasilctl getSelf succeeds once it's up)
-for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20){
-	if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null)
-		sleep 1
+
+# Clear the graveyard. Writing "kill" to /proc/<pid>/ctl has an explicit
+# `case Broken: unbreak(p)` branch (devproc.c CMkill), and unbreak() pulls
+# the proc off the broken list and ready()s it so its pending Proc_exitme
+# actually runs -- the supported way to reap one. The kernel keeps at most
+# NBROKEN=4 (proc.c), evicting FIFO, so this is bounded work.
+# /proc/<pid>/status is fixed-width: p->text, p->user, then the state
+# string (devproc.c Qstatus), hence the *name*...*state* glob below.
+for(d in `{ls -d /proc/* >[2]/dev/null}){
+	st=`{cat $d/status >[2]/dev/null}
+	if(~ $"st *yggdrasi*Broken*){
+		echo kill >$d/ctl >[2]/dev/null
+		ylog 'ygg-up: reaped broken yggdrasil proc' $d
+	}
 }
-if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null){
-	echo 'ygg-up: yggdrasil admin socket never came up; peers not injected'
-	exit 'no admin'
+
+if(ygglive)
+	ylog 'ygg-up: yggdrasil already running'
+if not {
+	$YGG -useconffile $RUNCONF -logto /tmp/yggdrasil.log &
+	ylog 'ygg-up: started admin' $ADMIN
 }
-n=0
-# grep -s is STATUS ONLY (no output); never combine -s with a list-producing
-# grep. -e gives multiple patterns: skip comments and blank lines. Pass
-# 'uri='$p (single-quoted: rc makes a bare `=` an assignment) so addPeer gets
-# one literal arg uri=<peer> -- a bare URI has no `=` and is ignored.
-for(p in `{grep -v -e '^#' -e '^$' /lib/yggdrasil.peers}){
-	if(yggdrasilctl addPeer 'uri='$p >/dev/null >[2]/dev/null)
-		n=`{hoc -e $n^'+1'}
-}
-echo 'ygg-up: injected' $n 'peers from /lib/yggdrasil.peers'
-yggdrasilctl getSelf
-yggdrasilctl getPeers
+
+if(test -x /rc/bin/ygg-peers)
+	/rc/bin/ygg-peers

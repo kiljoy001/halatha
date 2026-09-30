@@ -42,6 +42,9 @@ type Relay struct {
 	// dialed — egress is inert without a valid cert.
 	Auth *CertAuth
 
+	// CheckOrigin optionally validates the Origin header on WebSocket upgrade.
+	CheckOrigin func(*http.Request) bool
+
 	upgrader websocket.Upgrader
 }
 
@@ -51,14 +54,14 @@ func (r *Relay) defaults() {
 			return net.Dial(network, addr)
 		}
 	}
+	checkOrigin := r.CheckOrigin
+	if checkOrigin == nil {
+		checkOrigin = func(*http.Request) bool { return true }
+	}
 	r.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
-		// The browser page may be served from a different origin than the relay
-		// host (localhost dev vs. a grid relay); accept all, matching
-		// cmd/wanix/serve.go's upgrader. Lock down with a token before exposing
-		// publicly (see plan risks).
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin:     checkOrigin,
 	}
 }
 

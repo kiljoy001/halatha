@@ -1,0 +1,31 @@
+import "stdlib/net.o9";
+import "stdlib/file.o9";
+import "publickeys.o9";
+
+class KeyRequestClient {
+    private PublicKeys keys;
+    method KeyRequestClient() { keys = new PublicKeys(); }
+    method string submit(string endpoint, string kind, string clientKey, string transportKey) {
+        NetConn conn = new NetConn(endpoint);
+        File mountpoint = new File("/n/keyrequests");
+        File control = new File("/n/keyrequests/request");
+        File receipt = new File("/n/keyrequests/status");
+        string body;
+        string result;
+        int64 written;
+        if(!keys.valid(clientKey) || !keys.valid(transportKey)) { return "ERROR: public keys must be 64 lowercase hex characters."; }
+        if(cmp(kind, "register") != 0 && cmp(kind, "change-transport") != 0) { return "ERROR: unsupported request type."; }
+        if(!mountpoint.exists()) { mountpoint.mkdir(); }
+        if(!conn.dial()) { return "ERROR: cannot connect to request service."; }
+        if(!conn.mountFarReplace("/n/keyrequests")) { conn.close(); return "ERROR: cannot mount proposal service."; }
+        body = cat("{\"action\":\"", kind);
+        body = cat(body, "\",\"clientKey\":\""); body = cat(body, clientKey);
+        body = cat(body, "\",\"transportKey\":\""); body = cat(body, transportKey);
+        body = cat(body, "\"}\n");
+        written = control.append(body);
+        if(written == len(body)) { result = receipt.read(); }
+        else { result = "ERROR: request rejected. There may already be a pending request for this key, or the inbox may be full."; }
+        conn.unmount("/n/keyrequests");
+        return result;
+    }
+}

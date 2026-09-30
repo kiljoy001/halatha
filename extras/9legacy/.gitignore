@@ -1,0 +1,4 @@
+# Ignore raw binary tarball and root private signing key
+bin/
+bin.tar.gz
+*.priv

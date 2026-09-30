@@ -144,6 +144,11 @@ type P9PortReadWriter struct {
 func NewP9PortReadWriter(port js.Value) *P9PortReadWriter {
 	rbuf := pipe.NewBuffer(true)
 	onRecv := js.FuncOf(func(this js.Value, args []js.Value) any {
+		payload := args[0].Get("data")
+		if payload.Type() == js.TypeObject && payload.Get("closed").Type() == js.TypeBoolean && payload.Get("closed").Bool() {
+			rbuf.Close()
+			return nil
+		}
 		data := js.Global().Get("Uint8Array").New(args[0].Get("data"))
 		buf := make([]byte, data.Length())
 		js.CopyBytesToGo(buf, data)

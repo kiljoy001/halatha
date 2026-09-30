@@ -1,0 +1,13 @@
+diff --git a/sys/src/9/pc/mkfile b/sys/src/9/pc/mkfile
+index 7a00d838d..6f974ccf8 100644
+--- a/sys/src/9/pc/mkfile
++++ b/sys/src/9/pc/mkfile
+@@ -132,7 +132,7 @@ main.$O:			init.h reboot.h
+ main.$O memory.$O:		multiboot.h
+ wavelan.$O:			wavelan.c ../pc/wavelan.c ../pc/wavelan.h
+ etherwavelan.$O:		etherwavelan.c ../pc/wavelan.h
+-devusb.$O usbuhci.$O usbohci.$O usbehci.$O: ../port/usb.h
++devusb.$O usbuhci.$O usbohci.$O usbehci.$O usbns.$O: ../port/usb.h
+ trap.$O:			/sys/include/tos.h
+ uartaxp.$O:			uartaxp.h
+ etherm10g.$O:			etherm10g2k.h etherm10g4k.h

@@ -2,8 +2,6 @@ module tractor.dev/wanix
 
 go 1.26
 
-replace github.com/hugelgupf/p9 => github.com/progrium/p9 v0.0.0-20260715041022-79858e13150c
-
 replace golang.org/x/sys => github.com/progrium/sys-wasm v0.0.0-20240620081741-5ccc4fc17421
 
 // patch on top of the feature/cbor-tinygo-beta branch
@@ -13,15 +11,14 @@ replace github.com/fxamacker/cbor/v2 => ./misc/cbor
 replace tractor.dev/wanix/fs/r2fs => ./fs/r2fs
 
 require (
+	9fans.net/go v0.0.2
 	github.com/creack/pty v1.1.24
 	github.com/evanw/esbuild v0.28.0
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hanwen/go-fuse/v2 v2.7.2
-	github.com/hugelgupf/p9 v0.3.1-0.20240118043522-6f4f11e5296e
 	github.com/knusbaum/go9p v1.18.0
 	github.com/progrium/go-netstack v0.0.0-20240720002214-37b2b8227b91
-	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701
 	go.bug.st/serial v1.6.4
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
@@ -29,7 +26,6 @@ require (
 )
 
 require (
-	9fans.net/go v0.0.2 // indirect
 	github.com/Plan9-Archive/libauth v0.0.0-20180917063427-d1ca9e94969d // indirect
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/creack/goselect v0.1.2 // indirect

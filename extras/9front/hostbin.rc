@@ -1,0 +1,100 @@
+#!/bin/rc
+# hostbin — mount the host's attested binary tree over 9P and bind it.
+#
+# The browser used to fetch all ~800 binaries over HTTP, one at a time, and
+# write them into a ramfs the guest saw at /n/host/bin. At ~0.5s per round
+# trip that is minutes for the full set, so `pkg install all` timed out long
+# before it finished and only a handful ever appeared.
+#
+# The guest speaks 9P natively, so mount the tree instead: only the pages
+# actually executed cross the wire. The server checks every file against the
+# Ed25519-signed manifest before returning its bytes (fs/libtabfs), so a
+# binary that fails verification cannot be opened, and therefore cannot run.
+#
+# The host is reached at a fixed reserved address through the WISP relay.
+# The relay substitutes its own listener's address, so the guest never names
+# a real destination and this does not widen the relay's egress policy.
+# 192.0.2.0/24 is TEST-NET-1 (RFC 5737) and is never routable.
+#
+# What lands at $MTPT is a namespace built for the guest: bin/, and ipfs/
+# and ygg/ when the server exports them. It is NOT the served web directory
+# -- the guest has no view of index.html, the examples or the disk images,
+# because those paths are not part of this namespace at all.
+
+HOSTADDR=192.0.2.9
+PORT=564
+SRVNAME=hostsvc
+MTPT=/n/svc
+LOG=/tmp/hostbin.log
+
+fn hlog {
+	echo $* >>$LOG
+}
+
+# `hostbin bind` re-applies only the bind, for a namespace that inherited
+# the mount but not the bind (every rio window). Mounting again would be
+# wrong as well as wasteful: it would stack a second connection on the
+# same mount point.
+if(~ $1 bind){
+	if(! test -d $MTPT/bin){
+		hlog 'hostbin bind: '^$MTPT^'/bin not mounted'
+		exit nomount
+	}
+	bind -a $MTPT/bin /bin
+	bind -a $MTPT/bin /386/bin
+	hlog 'hostbin bind: bound into /bin and /386/bin'
+	exit ''
+}
+
+if(! test -d $MTPT)
+	mkdir -p $MTPT
+
+# Already mounted? Nothing to do. Checking for a known entry is more
+# reliable than checking the mount table, which can hold a stale entry
+# after the connection has dropped.
+if(test -d $MTPT/bin){
+	hlog 'hostbin: already mounted'
+	exit ''
+}
+
+# The network must be up: without it dial fails immediately and the mount
+# reports a confusing error.
+if(! grep -s '192.168.86.100' /net/ipselftab){
+	hlog 'hostbin: network not up, not mounting'
+	exit 'nonet'
+}
+
+hlog 'hostbin: dialing tcp!'^$HOSTADDR^'!'^$PORT
+
+# srv posts the connection at /srv/$SRVNAME and mounts it at $MTPT.
+#
+# -n is REQUIRED, not cosmetic: srv defaults to doauth=1 and then mounts
+# with amount() (sys/src/cmd/srv.c), which negotiates authentication. The
+# wanix 9P server has no auth service, so the default would fail. -n selects
+# the plain mount() path. Passing three arguments already implies -m, so the
+# mount happens either way.
+if(srv -n 'tcp!'^$HOSTADDR^'!'^$PORT $SRVNAME $MTPT >>$LOG >[2=1]){
+	hlog 'hostbin: mounted at '^$MTPT
+}
+if not {
+	hlog 'hostbin: mount failed'
+	exit 'nomount'
+}
+
+if(! test -d $MTPT/bin){
+	hlog 'hostbin: mounted but no bin/ -- is the server running with -libtab-dir?'
+	exit 'nobin'
+}
+
+# Union the verified tree into the command paths. -a appends, so the
+# image's own binaries keep priority and this only adds what is missing.
+#
+# NOTE: when hostbin runs from halatha.local (the boot namespace), this
+# bind is NOT visible inside rio's windows -- rio rforks RFNAMEG and
+# snapshots the namespace. The MOUNT above is inherited, because it is part
+# of that snapshot; only the bind has to be repeated per namespace. The
+# profile re-runs `hostbin bind` for exactly that reason, and the mount
+# check above makes the second run cheap.
+bind -a $MTPT/bin /bin
+bind -a $MTPT/bin /386/bin
+hlog 'hostbin: bound '^$MTPT^'/bin into /bin and /386/bin'

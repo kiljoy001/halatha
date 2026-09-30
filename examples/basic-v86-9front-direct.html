@@ -3,6 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>direct-v86-9front</title>
+    <script type="module" src="/dist/wanix.min.js?v=9front-host9p1"></script>
     <style>
         html,
         body {
@@ -19,6 +20,10 @@
             width: 100vw;
             height: 100vh;
             background: #000;
+        }
+
+        #screen_container.pointer-locked {
+            cursor: none;
         }
 
         #screen_container canvas {
@@ -42,6 +47,7 @@
             border-radius: 4px;
             pointer-events: none;
         }
+
     </style>
 </head>
 <body>
@@ -51,14 +57,49 @@
     </div>
     <div id="status">loading v86</div>
 
+    <wanix-namespace id="host" allow-origins="*" debug>
+        <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="boot" src="#ramfs/new"></wanix-bind>
+        <wanix-bind dst="READY" type="file" perm="0666">READY
+</wanix-bind>
+        <wanix-bind type="import" dst="hostfs" src="/" transport="websocket" data-optional="1"></wanix-bind>
+    </wanix-namespace>
+
     <script type="module">
         import { V86 } from "../v86/lib/libv86.mjs";
 
         const status = document.getElementById("status");
+        const screenContainer = document.getElementById("screen_container");
+        const host = document.getElementById("host");
+        const params = new URLSearchParams(location.search);
         const mib = (bytes) => (bytes / 1024 / 1024).toFixed(1) + " MiB";
-
-        const emulator = new V86({
-            screen_container: document.getElementById("screen_container"),
+        const enc = new TextEncoder();
+        const isoURL = params.get("iso") || "../local/9front-11957.386.iso";
+        const isoSize = Number(params.get("size") || 494680064);
+        // The 9front ISO has both El Torito and a Plan 9 MBR, but this v86
+        // build reliably boots it through the IDE hard-disk path. The cdrom
+        // path reaches SeaBIOS but reports "no bootable media".
+        const media = params.get("media") === "cdrom" ? "cdrom" : "hda";
+        const bootOrder = parseBootOrder(params.get("boot") || (media === "hda" ? "c" : "d"));
+        const useParts = params.get("parts") === "1";
+        const host9p = params.get("host9p") !== "0";
+        const debug9p = params.get("debug9p") === "1";
+        const netMode = params.get("net") === "none" ? "none" : "ne2k";
+        const WISP_RELAY = "";
+        const WISP_GRID_RELAY = "";
+        const stateURL = params.get("state") === "copysh"
+            ? "https://i.copy.sh/9front_state-v3.bin.zst"
+            : params.get("state");
+        const chunkSize = parseSizeParam(params.get("chunk"), 1024 * 1024);
+        const disk = {
+            url: isoURL,
+            size: isoSize,
+            async: true,
+            use_parts: useParts,
+            fixed_chunk_size: chunkSize,
+        };
+        const config = {
+            screen_container: screenContainer,
             bios: {
                 url: "../v86/bundle/seabios.bin",
             },
@@ -69,17 +110,51 @@
             memory_size: 128 * 1024 * 1024,
             vga_memory_size: 8 * 1024 * 1024,
             acpi: true,
-            hda: {
-                url: "https://i.copy.sh/9front-10931.386/.iso",
-                size: 489453568,
-                async: true,
-                use_parts: true,
-                fixed_chunk_size: 1024 * 1024,
-            },
-            initial_state: {
-                url: "https://i.copy.sh/9front_state-v3.bin.zst",
-            },
+            filesystem: host9p ? { handle9p } : {},
             autostart: true,
+        };
+        if (media === "cdrom") {
+            config.cdrom = disk;
+            config.boot_order = bootOrder;
+        } else {
+            config.hda = disk;
+            config.boot_order = bootOrder;
+        }
+        if (stateURL) {
+            config.initial_state = { url: stateURL };
+        }
+        const relayURL = await resolveRelayURL(params, netMode);
+        config.net_device = netMode === "none"
+            ? { type: "none" }
+            : {
+                type: "ne2k",
+                relay_url: relayURL,
+            };
+        status.textContent = `loading 9front (${media}, ${mib(isoSize)}, net ${netMode}, relay ${relayURL || "none"})`;
+
+        const emulator = new V86(config);
+        let p9port = null;
+        const p9pending = new Map();
+        const p9queued = [];
+
+        function handle9p(reqbuf, reply_cb) {
+            const tag = reqbuf[5] | (reqbuf[6] << 8);
+            p9pending.set(tag, reply_cb);
+            if (debug9p) {
+                console.log(`9P -> host (${reqbuf.length}B type ${reqbuf[4]} tag ${tag})`);
+            }
+            if (p9port) {
+                p9port.postMessage(reqbuf);
+            } else {
+                p9queued.push(reqbuf);
+            }
+        }
+
+        host.addEventListener("ready", () => {
+            startHost9P().catch((err) => {
+                console.error("host9p:", err);
+                status.textContent = "host 9P failed";
+            });
         });
 
         emulator.add_listener("download-progress", (progress) => {
@@ -98,13 +173,180 @@
         });
 
         emulator.add_listener("emulator-loaded", () => {
-            status.textContent = "9front state loaded";
+            status.textContent = stateURL ? "9front state loaded" : "9front loaded";
             setTimeout(() => {
                 status.style.display = "none";
             }, 5000);
         });
 
+        screenContainer.addEventListener("click", () => {
+            if (!document.pointerLockElement) {
+                emulator.lock_mouse();
+            }
+        });
+
+        document.addEventListener("pointerlockchange", () => {
+            screenContainer.classList.toggle("pointer-locked", !!document.pointerLockElement);
+        });
+
         window.emulator = emulator;
+
+        async function startHost9P() {
+            const kernel = host._kernel;
+            const root = kernel.root;
+            await ensureHostTree(root);
+            if (!host9p) {
+                status.textContent = "host namespace ready (9P off)";
+                return;
+            }
+            const port = kernel._open9P2000();
+            port.onmessage = (event) => {
+                const data = event.data instanceof Uint8Array
+                    ? event.data
+                    : new Uint8Array(event.data);
+                const tag = data[5] | (data[6] << 8);
+                if (debug9p) {
+                    console.log(`9P <- host (${data.length}B type ${data[4]} tag ${tag})`);
+                }
+                const cb = p9pending.get(tag);
+                if (cb) {
+                    p9pending.delete(tag);
+                    cb(data);
+                }
+            };
+            p9port = port;
+            while (p9queued.length) {
+                p9port.postMessage(p9queued.shift());
+            }
+            status.textContent = "host 9P on virtio-9p ready";
+        }
+
+        async function ensureHostTree(root) {
+            await ignoreExists(() => root.makeDirAll("boot"));
+            await writeText(root, "READY", "READY\n");
+            await ignoreExists(() => ensureFile(root, "boot/guest.log", ""));
+            await ignoreExists(() => ensureFile(root, "boot/status", "host 9P ready\n"));
+            await seedHostBootScripts(root);
+        }
+
+        async function seedHostBootScripts(root) {
+            const scripts = [
+                ["extras/9front/halatha.local", "boot/halatha.local"],
+                ["extras/9front/ygg-up.rc", "boot/ygg-up.rc"],
+                ["extras/9front/ygg-peers.rc", "boot/ygg-peers.rc"],
+                ["extras/9front/yggdrasil.peers", "boot/yggdrasil.peers"],
+            ];
+            for (const [src, dst] of scripts) {
+                try {
+                    const response = await fetch(`/${src}`, { cache: "no-store" });
+                    if (!response.ok) {
+                        throw new Error(`${response.status} ${response.statusText}`);
+                    }
+                    await writeText(root, dst, await response.text());
+                } catch (err) {
+                    console.warn(`seed ${dst}:`, err);
+                }
+            }
+            await writeText(root, "boot/README", [
+                "Halatha 9front host files",
+                "",
+                "If this guest kernel has devvirtio9p, mount this namespace with:",
+                "  mount -c '#9/host9p' /n/host",
+                "or:",
+                "  mount -c '#9/0' /n/host",
+                "",
+            ].join("\n"));
+        }
+
+        async function ensureFile(root, path, text) {
+            try {
+                await root.stat(path);
+            } catch (_) {
+                await writeText(root, path, text);
+            }
+        }
+
+        async function writeText(root, path, text) {
+            await root.writeFile(path, enc.encode(text));
+        }
+
+        async function ignoreExists(fn) {
+            try {
+                await fn();
+            } catch (err) {
+                if (!String(err && (err.message || err)).includes("file exists")) {
+                    throw err;
+                }
+            }
+        }
+
+        async function resolveRelayURL(params, netMode) {
+            if (netMode === "none" || params.get("relay") === "none") {
+                return undefined;
+            }
+            const override = params.get("relay") || WISP_RELAY || "";
+            if (override) {
+                return override;
+            }
+            try {
+                const ctrl = new AbortController();
+                const to = setTimeout(() => ctrl.abort(), 1500);
+                const resp = await fetch("/.well-known/wanix", {
+                    signal: ctrl.signal,
+                    cache: "no-store",
+                });
+                clearTimeout(to);
+                if (resp.ok) {
+                    const cfg = await resp.json();
+                    if (cfg && cfg.wisp) {
+                        const scheme = location.protocol === "https:" ? "wisps" : "wisp";
+                        return `${scheme}://${location.host}${cfg.wisp}`;
+                    }
+                }
+            } catch (_) {
+                // Not served by wanix, or no same-origin relay advertised.
+            }
+            return WISP_GRID_RELAY || "fetch";
+        }
+
+        function parseBootOrder(boot) {
+            if (/^0x[0-9a-f]+$/i.test(boot || "")) {
+                return Number.parseInt(boot, 16);
+            }
+            if (/^[0-9]+$/.test(boot || "")) {
+                return Number.parseInt(boot, 10);
+            }
+            // v86 stores the first boot device in the low nibble. Its built-in
+            // defaults are hda=0x312 and fda=0x321, so cdrom-first is 0x123.
+            switch ((boot || "")[0]) {
+                case "a":
+                case "b":
+                    return 0x321;
+                case "c":
+                    return 0x312;
+                case "d":
+                    return 0x123;
+                case "n":
+                    return 0x124;
+                default:
+                    return 0x123;
+            }
+        }
+
+        function parseSizeParam(value, fallback) {
+            if (!value) {
+                return fallback;
+            }
+            const match = String(value).trim().match(/^(\d+)([kKmM]?)$/);
+            if (!match) {
+                return fallback;
+            }
+            const n = Number(match[1]);
+            const suffix = match[2].toLowerCase();
+            const scale = suffix === "m" ? 1024 * 1024 : suffix === "k" ? 1024 : 1;
+            const bytes = n * scale;
+            return bytes > 0 ? bytes : fallback;
+        }
     </script>
 </body>
 </html>

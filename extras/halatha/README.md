@@ -45,3 +45,9 @@ fetch/body      read latest fetched response
 net/status      WISP/Ygg/browser network status
 uploads/        browser file-picker/import ingress
 ```
+
+## Administrator key registration
+
+The [keyreg Objective-9C GUI](keyreg/README.md) manages explicit babyfs key
+registration and revocation from an authenticated administrator session.
+It never automatically enrolls browser or VM identities.

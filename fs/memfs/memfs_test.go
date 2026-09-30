@@ -555,61 +555,44 @@ func TestTruncate(t *testing.T) {
 	})
 
 	t.Run("TruncateMultipleHandles", func(t *testing.T) {
-		// Test with multiple file handles open simultaneously
-		// This demonstrates that each handle has its own buffer snapshot
 		m := New()
 
-		// Create file
 		if err := fs.WriteFile(m, "test.txt", []byte("original content"), 0644); err != nil {
 			t.Fatal(err)
 		}
 
-		// Open first handle
 		f1, err := m.Open("test.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// Open second handle
 		f2, err := m.Open("test.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// Truncate the underlying node
 		if err := fs.Truncate(m, "test.txt", 0); err != nil {
 			t.Fatal(err)
 		}
 
-		// Write from first handle - writes to its buffer which had "original content"
 		if w, ok := f1.(interface{ Write([]byte) (int, error) }); ok {
 			w.Write([]byte("from f1"))
 		}
 
-		// Close first handle - syncs its buffer to node
 		f1.Close()
 
-		// At this point the file contains "from f1l content" because f1's buffer
-		// had "original content" and we overwrote the first 7 bytes
-
-		// Write from second handle - writes to its buffer
 		if w, ok := f2.(interface{ Write([]byte) (int, error) }); ok {
 			w.Write([]byte("from f2"))
 		}
 
-		// Close second handle - syncs its buffer to node
 		f2.Close()
 
-		// The second write overwrites because it closed last
 		data, err := fs.ReadFile(m, "test.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// Both handles had copies of "original content" in their buffers
-		// Both overwrote the first 7 bytes with their write
-		// The last close wins, so we get f2's modified buffer
-		expected := "from f2l content"
+		expected := "from f2"
 		if string(data) != expected {
 			t.Errorf("expected '%s', got '%s'", expected, string(data))
 		}

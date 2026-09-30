@@ -1,7 +1,7 @@
-// Package p9p serves a wanix filesystem (fs.FS) over the original 9P2000
-// protocol (the Plan 9 dialect), as opposed to fs/p9kit which serves
-// 9P2000.L. This is what a 9front guest speaks, so the wanix namespace can be
-// mounted natively by 9front.
+// Package p9p serves and mounts wanix filesystems (fs.FS) over 9P2000, the
+// Plan 9 dialect. It is the only 9P dialect wanix speaks: a 9front or
+// 9legacy guest mounts the namespace natively, and wanix instances import
+// each other with the same protocol.
 //
 // It is a thin 9P2000 server over a path-based fid table: each fid maps to a
 // namespace path (and an open fs.File once opened). It is transport-agnostic;
@@ -14,42 +14,25 @@ package p9p
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"hash/fnv"
 	"io"
 	"log"
+	"math"
 	pathpkg "path"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/knusbaum/go9p/proto"
 
 	"tractor.dev/wanix/fs"
 )
 
-// Serve serves fsys over 9P2000 on the given reader/writer (e.g. a VM serial
-// channel). It blocks until the connection closes or errors.
-func Serve(fsys fs.FS, r io.Reader, w io.Writer) error {
-	s := &srv{Fsys: fsys, w: w}
-	c := &conn{fids: make(map[uint32]*fidState), msize: proto.MaxMsgLen}
-	for {
-		call, err := proto.ParseCall(r)
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-		if resp := s.handle(c, call); resp != nil {
-			if _, err := w.Write(resp.Compose()); err != nil {
-				return err
-			}
-		}
-	}
-}
-
 type srv struct {
 	Fsys fs.FS
-	w    io.Writer
+	ctx  context.Context
 }
 
 // conn holds the per-connection fid table.
@@ -60,11 +43,12 @@ type conn struct {
 }
 
 type fidState struct {
-	path   string  // wanix namespace path; "." is the root
-	file   fs.File // non-nil once opened for a regular file
-	isDir  bool
-	opened bool
-	dirBuf []byte // cached concatenated stat records for directory reads
+	path      string  // wanix namespace path; "." is the root
+	file      fs.File // non-nil once opened for a regular file
+	isDir     bool
+	opened    bool
+	dirOffset uint64
+	dirBuf    []byte // cached concatenated stat records for directory reads
 }
 
 // --- helpers ---
@@ -80,21 +64,31 @@ func joinPath(base, name string) string {
 		return base
 	}
 	if base == "." || base == "" {
-		return name
+		// Clean the component on its own so a client-supplied name like
+		// "/etc/passwd" cannot yield an absolute path: wanix namespace
+		// paths are relative and fs.ValidPath rejects a leading slash.
+		return pathpkg.Join(".", name)
 	}
 	return pathpkg.Join(base, name)
 }
 
-// qidFor synthesizes a 9P qid for a namespace path. wanix has no inode, so the
-// path is hashed into a 64-bit unique id; the qtype is the high bit for dirs.
+// qidFor uses native identity and mutation counters where available. Generic
+// filesystems without this contract use an uncached (version zero) path QID;
+// their external rename/replacement identity cannot be inferred from FileInfo.
 func qidFor(p string, info fs.FileInfo) proto.Qid {
 	qtype := uint8(0)
 	if info.IsDir() {
 		qtype = 0x80
 	}
+	if ident, ok := info.(interface{ FileIdentity() (uint64, uint32) }); ok {
+		id, version := ident.FileIdentity()
+		if id != 0 {
+			return proto.Qid{Qtype: qtype, Vers: version, Uid: id}
+		}
+	}
 	h := fnv.New64a()
 	h.Write([]byte(p))
-	return proto.Qid{Qtype: qtype, Vers: uint32(info.ModTime().Unix()), Uid: h.Sum64()}
+	return proto.Qid{Qtype: qtype, Vers: 0, Uid: h.Sum64() | (uint64(1) << 63)}
 }
 
 func statFor(p string, info fs.FileInfo) proto.Stat {
@@ -120,7 +114,14 @@ func statFor(p string, info fs.FileInfo) proto.Stat {
 }
 
 func (s *srv) stat(p string) (fs.FileInfo, error) {
-	return fs.Stat(s.Fsys, p)
+	return fs.StatContext(s.context(), s.Fsys, p)
+}
+
+func (s *srv) context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
 }
 
 func (c *conn) fid(id uint32) (*fidState, bool) {
@@ -287,6 +288,7 @@ func (s *srv) create(c *conn, t *proto.TCreate) proto.FCall {
 		}
 		c.mu.Lock()
 		f.path = np
+		f.opened = true
 		f.isDir = true
 		c.mu.Unlock()
 	} else {
@@ -324,13 +326,33 @@ func (s *srv) read(c *conn, t *proto.TRead) proto.FCall {
 	}
 	if f.isDir {
 		buf := f.dirBuf
+		if t.Offset != 0 && t.Offset != f.dirOffset {
+			return rerr(t.Tag, "invalid directory offset")
+		}
+		if t.Offset == 0 {
+			f.dirOffset = 0
+		}
 		if t.Offset >= uint64(len(buf)) {
-			return &proto.RRead{Header: proto.Header{Type: proto.Rread, Tag: t.Tag}, Count: 0}
+			return &proto.RRead{Header: proto.Header{Type: proto.Rread, Tag: t.Tag}}
 		}
-		end := t.Offset + count
-		if end > uint64(len(buf)) {
-			end = uint64(len(buf))
+		end := t.Offset
+		for end < uint64(len(buf)) {
+			if uint64(len(buf))-end < 2 {
+				return rerr(t.Tag, "invalid directory record")
+			}
+			size := uint64(binary.LittleEndian.Uint16(buf[end:])) + 2
+			if size > uint64(len(buf))-end {
+				return rerr(t.Tag, "invalid directory record")
+			}
+			if size > count-(end-t.Offset) {
+				break
+			}
+			end += size
 		}
+		if end == t.Offset && count > 0 {
+			return rerr(t.Tag, "read count too small for directory entry")
+		}
+		f.dirOffset = end
 		data := buf[t.Offset:end]
 		return &proto.RRead{Header: proto.Header{Type: proto.Rread, Tag: t.Tag}, Count: uint32(len(data)), Data: data}
 	}
@@ -401,22 +423,44 @@ func (s *srv) wstat(c *conn, t *proto.TWstat) proto.FCall {
 	if !ok {
 		return rerr(t.Tag, "unknown fid")
 	}
+	// In a 9P2000 wstat, all ones in a number and "" in a string mean
+	// "leave this field alone" (stat(5)). Zero is a real value: length 0
+	// truncates. A rename is only a new name within the same directory.
 	st := t.Stat
-	if st.Name != "" && st.Name != "/" {
+	if st.Name != "" {
+		if strings.Contains(st.Name, "/") || st.Name == "." || st.Name == ".." {
+			return rerr(t.Tag, "wstat: bad name")
+		}
 		np := joinPath(pathpkg.Dir(f.path), st.Name)
 		if np != f.path {
-			if err := fs.Rename(s.Fsys, f.path, np); err == nil {
-				c.mu.Lock()
-				f.path = np
-				c.mu.Unlock()
+			if err := fs.Rename(s.Fsys, f.path, np); err != nil {
+				return rerr(t.Tag, "wstat: "+err.Error())
 			}
+			c.mu.Lock()
+			f.path = np
+			c.mu.Unlock()
 		}
 	}
-	if st.Mode != 0 {
-		_ = fs.Chmod(s.Fsys, f.path, fs.FileMode(st.Mode&0777)) // best-effort
+	// Mode and mtime are metadata a backing store may be unable to keep;
+	// that is not a failure of the request. Any other error is reported.
+	if st.Mode != ^uint32(0) {
+		if err := fs.Chmod(s.Fsys, f.path, fs.FileMode(st.Mode&0777)); err != nil && !errors.Is(err, fs.ErrNotSupported) {
+			return rerr(t.Tag, "wstat: "+err.Error())
+		}
 	}
-	if st.Length != 0 {
-		_ = fs.Truncate(s.Fsys, f.path, int64(st.Length))
+	if st.Length != ^uint64(0) {
+		if st.Length > math.MaxInt64 {
+			return rerr(t.Tag, "wstat: bad length")
+		}
+		if err := fs.Truncate(s.Fsys, f.path, int64(st.Length)); err != nil {
+			return rerr(t.Tag, "wstat: "+err.Error())
+		}
+	}
+	if st.Mtime != ^uint32(0) {
+		mtime := time.Unix(int64(st.Mtime), 0)
+		if err := fs.Chtimes(s.Fsys, f.path, mtime, mtime); err != nil && !errors.Is(err, fs.ErrNotSupported) {
+			return rerr(t.Tag, "wstat: "+err.Error())
+		}
 	}
 	return &proto.RWstat{Header: proto.Header{Type: proto.Rwstat, Tag: t.Tag}}
 }
@@ -424,7 +468,7 @@ func (s *srv) wstat(c *conn, t *proto.TWstat) proto.FCall {
 // dirListing returns the concatenated 9P stat records for the directory's
 // children (the data returned by reading a directory).
 func (s *srv) dirListing(dir string) ([]byte, error) {
-	entries, err := fs.ReadDir(s.Fsys, dir)
+	entries, err := fs.ReadDirContext(s.context(), s.Fsys, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -446,12 +490,18 @@ func (s *srv) dirListing(dir string) ([]byte, error) {
 // handle shares data with the rest of the namespace. OpenContext ignores the
 // mode; Otrunc is applied separately.
 func (s *srv) openFile(p string, mode proto.Mode) (fs.File, error) {
-	f, err := fs.OpenContext(context.Background(), s.Fsys, p)
+	if mode&proto.Otrunc != 0 {
+		if err := fs.Truncate(s.Fsys, p, 0); err != nil {
+			return nil, err
+		}
+	}
+	f, err := fs.OpenContext(s.context(), s.Fsys, p)
 	if err != nil {
 		return nil, err
 	}
-	if mode&proto.Otrunc != 0 {
-		_ = fs.Truncate(s.Fsys, p, 0)
+	if err := s.context().Err(); err != nil {
+		f.Close()
+		return nil, err
 	}
 	return f, nil
 }
@@ -469,6 +519,10 @@ func (s *srv) createFile(p string, perm fs.FileMode) (fs.File, error) {
 	}
 	if perm != 0 {
 		_ = fs.Chmod(s.Fsys, p, perm)
+	}
+	if err := s.context().Err(); err != nil {
+		f.Close()
+		return nil, err
 	}
 	return f, nil
 }

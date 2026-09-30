@@ -1,0 +1,125 @@
+#!/bin/rc
+# pkg — verified 9legacy package manager backed by Wanix + libtab
+# Usage:
+#   pkg install <name>    — install & verify binary (e.g. pkg install mothra)
+#   pkg install all       — install all 803 verified binaries
+#   pkg list [filter]     — list available binaries in signed libtab
+#   pkg verify            — show libtab verification status
+#   pkg bind              — bind /n/host/bin into /bin and /386/bin
+
+sub=$1
+if(~ $#sub 0){
+	echo 'usage: pkg install <name>|all' >[1=2]
+	echo '       pkg list [filter]' >[1=2]
+	echo '       pkg verify' >[1=2]
+	echo '       pkg bind' >[1=2]
+	exit usage
+}
+shift
+
+# NOTE: the poll loops below use $st, not $status. In rc, `status` is
+# the builtin exit-status variable and the ~ operator WRITES to it
+# (rc/exec.c Xmatch: setstatus("no match")), so `if(~ $status ...)`
+# clobbers the very value it is testing -- errors came out as the
+# literal text "no match" instead of the real status.
+root=/n/host/bin
+
+switch($sub){
+case bind
+	if(! test -d $root){
+		echo 'pkg: /n/host/bin not mounted' >[1=2]
+		exit nomount
+	}
+	if(! test -f $root/STATUS){
+		echo 'pkg: /n/host/bin/STATUS not present' >[1=2]
+		exit nostatus
+	}
+	st=`{cat $root/STATUS}
+	if(! ~ $st VERIFIED*){
+		echo 'pkg: REFUSING to bind: '$st >[1=2]
+		exit unverified
+	}
+	bind -a $root /bin
+	bind -a $root /386/bin
+	echo 'pkg: bound verified /n/host/bin to /bin and /386/bin'
+
+case install get
+	name=$1
+	if(~ $#name 0){
+		echo 'usage: pkg install <name>' >[1=2]
+		exit usage
+	}
+	if(! test -f $root/STATUS){
+		echo 'pkg: /n/host/bin not initialized' >[1=2]
+		exit noinit
+	}
+	vstatus=`{cat $root/STATUS}
+	if(! ~ $vstatus VERIFIED*){
+		echo 'pkg: security verification failed: '$vstatus >[1=2]
+		exit unverified
+	}
+	echo -n '' > $root/status
+	echo 'install '$name > $root/ctl
+
+	# `install all` fetches ~800 binaries in the browser. Even fetched
+	# concurrently that is minutes, not seconds, so a single 30s budget
+	# reported failure while the page was still working -- and binaries
+	# that landed afterwards showed up unannounced. Wait longer for `all`,
+	# and treat visible progress as liveness rather than counting seconds:
+	# as long as the status line keeps changing, the page is alive.
+	limit=60
+	if(~ $name all)
+		limit=900
+	st=''
+	last=''
+	stall=0
+	done=()
+	i=0
+	while(~ $#done 0 && test $i -lt $limit){
+		i=`{hoc -e $i^'+1'}
+		if(test -f $root/status){
+			st=`{cat $root/status}
+			st=$"st
+			if(~ $st installed* error*){
+				echo $st
+				done=1
+			}
+			if(~ $#done 0){
+				if(~ $st $last)
+					stall=`{hoc -e $stall^'+1'}
+				if(! ~ $st $last)
+					stall=0
+				last=$st
+				# 120 consecutive seconds with no progress: the page
+				# is not working on this any more.
+				if(test $stall -ge 120){
+					echo 'pkg: timed out (no progress): '$st >[1=2]
+					done=1
+				}
+			}
+		}
+		if(~ $#done 0)
+			sleep 1
+	}
+	if(~ $#done 0)
+		echo 'pkg: timed out after '$limit's: '$st >[1=2]
+
+case list
+	filter=$1
+	if(test -f $root/bin.tab){
+		if(~ $#filter 0)
+			grep '^path=' $root/bin.tab | sed 's/^path=//' | sort
+		if not
+			grep '^path=' $root/bin.tab | sed 's/^path=//' | grep -i $filter | sort
+	}
+
+case verify status
+	if(test -f $root/STATUS)
+		cat $root/STATUS
+	if not
+		echo 'pkg: /n/host/bin not yet initialized'
+
+case *
+	echo 'pkg: unknown command' $sub >[1=2]
+	exit usage
+}

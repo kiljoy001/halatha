@@ -15,7 +15,7 @@ import (
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
 	"tractor.dev/wanix/fs/metacache"
-	"tractor.dev/wanix/fs/p9kit"
+	"tractor.dev/wanix/fs/p9p"
 	"tractor.dev/wanix/misc"
 	"tractor.dev/wanix/misc/jsutil"
 	"tractor.dev/wanix/vm"
@@ -81,8 +81,8 @@ func (r *Resource) Start(args ...string) error {
 	wanix.SetWorker(r.task, r.worker)
 
 	port := sys.Element().Call("_openPort", r.task.ID())
-	p9 := sys.Element().Call("_open9P", r.task.ID())
-	p9p := sys.Element().Call("_open9P2000", r.task.ID())
+	p9Port := sys.Element().Call("_open9P", r.task.ID())
+	p9pPort := sys.Element().Call("_open9P2000", r.task.ID())
 
 	r.worker.Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) any {
 		go func() {
@@ -95,7 +95,7 @@ func (r *Resource) Start(args ...string) error {
 				go func() {
 					// use initial signal message to mount export
 					conn := misc.NewFakeConn(jsutil.NewPortReadWriter(exportPort))
-					exportFS, err := p9kit.ClientFS(conn, "")
+					exportFS, err := p9p.ClientFS(conn, "none", "")
 					if err != nil {
 						log.Println("error creating client for export", err)
 						return
@@ -135,12 +135,12 @@ func (r *Resource) Start(args ...string) error {
 		"id":   r.id,
 		"tid":  r.task.ID(),
 		"port": port,
-		"p9":   p9,
-		"p9p":  p9p,
+		"p9":   p9Port,
+		"p9p":  p9pPort,
 		"cmd":  strings.Join(args, " "),
 		"env":  env,
 		"url":  url,
-	}}, []any{port, p9, p9p})
+	}}, []any{port, p9Port, p9pPort})
 
 	r.state = "running"
 	return nil

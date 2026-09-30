@@ -89,10 +89,9 @@ func (d *Device) Alloc() (rid string, err error) {
 	rid = strconv.Itoa(d.nextID)
 	hub := signal.NewBroadcaster()
 	_, dataPF, progPF := pipe.NewFS(true)
-	// remove := func() {
-	// 	d.remove(rid)
-	// }
-	progWrap := &programFile{PortFile: progPF}
+	progWrap := &programFile{PortFile: progPF, onEOF: func() {
+		d.remove(rid)
+	}}
 	root := fskit.MapFS{
 		"id":      fskit.RawNode([]byte(rid+"\n"), 0555),
 		"data":    fskit.FileFS(dataPF, "data"),
@@ -110,12 +109,16 @@ func (d *Device) Alloc() (rid string, err error) {
 
 func (d *Device) remove(rid string) {
 	d.mu.Lock()
-	res, err := d.Get(rid)
-	if err != nil {
+	// Look the resource up directly rather than calling Get, which takes a
+	// read lock on the same non-reentrant mutex we already hold.
+	entry, ok := d.resources[rid]
+	if !ok {
 		d.mu.Unlock()
 		return
 	}
 	delete(d.resources, rid)
 	d.mu.Unlock()
-	res.shutdown()
+	if res, ok := entry.(*Resource); ok {
+		res.shutdown()
+	}
 }

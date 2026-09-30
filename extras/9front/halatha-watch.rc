@@ -1,0 +1,100 @@
+#!/bin/rc
+# halatha-watch: guest-side self-check.
+#
+# Runs once, after rio, and writes pass/fail to /n/host/boot/health so the
+# host `halatha-watch --check` can read it back.
+#
+# This exists because the bugs that cost the most time on 2026-09-21 were
+# invisible from outside the VM. /n/host/bin was bound -- the log said so,
+# truthfully -- but into the boot namespace, which rio had already forked
+# away from, so /bin was empty in every window. Nothing noticed. Likewise
+# /dev/snarf only exists inside a rio window's namespace, so a daemon
+# started from termrc can never reach it.
+#
+# Only the guest can answer these. Each line is "OK <name>" or "FAIL <name>".
+
+out=/n/host/boot/health
+
+fn say {
+	echo $* >>$out
+}
+
+if(! test -d /n/host){
+	# Nowhere to report to; say so on the console and give up.
+	echo 'halatha-watch: /n/host not mounted' >/dev/cons
+	exit nomount
+}
+if(! test -d /n/host/boot)
+	mkdir /n/host/boot >[2]/dev/null
+
+# backticks split on whitespace, so `{date} is a LIST; ^ distributes over it
+# and would repeat the prefix for every word. Join it first.
+d=`{date}
+d=$"d
+echo 'halatha-watch '^$d >$out
+
+# 1. Is the verified host binary tree actually bound into /bin?
+#    This is THE namespace check: halatha.local used to bind it from termrc,
+#    before rio forked, so the bind landed nowhere a window could see.
+if(test -x /bin/troff)
+	say OK bin-bound troff resolves via /bin
+if not
+	say FAIL bin-bound /bin/troff missing - libtab union bind did not reach this namespace
+
+# 2. Did libtab verification pass on the host side?
+if(test -f /n/host/bin/STATUS){
+	st=`{cat /n/host/bin/STATUS}
+	st=$"st
+	if(~ $st VERIFIED*)
+		say OK libtab $st
+	if not
+		say FAIL libtab $st
+}
+if not
+	say FAIL libtab /n/host/bin/STATUS missing
+
+# 3. Is the clipboard device reachable?
+#    /dev/snarf only exists inside a rio WINDOW's namespace (rio rforks
+#    RFNAMEG per window and binds its 9P service over /dev). This check runs
+#    from the profile, BEFORE `exec rio`, so /dev/snarf legitimately cannot
+#    exist yet -- reporting FAIL here would be permanently wrong. What we can
+#    check is that the escape hatch clip.rc needs is present: rio posts
+#    /srv/rio.* and /srv/riowctl.* globally, and those are reachable from any
+#    namespace. Absent them, `clip` has no route to snarf at all.
+if(test -x /rc/bin/clip)
+	say OK snarf-tool /rc/bin/clip staged - run clip in inside a rio window
+if not
+	say FAIL snarf-tool /rc/bin/clip missing
+
+# 4. Does the host bridge round-trip, not just mount?
+echo halatha-watch-probe >/n/host/boot/.probe >[2]/dev/null
+if(test -f /n/host/boot/.probe){
+	p=`{cat /n/host/boot/.probe}
+	p=$"p
+	if(~ $p halatha-watch-probe)
+		say OK host9p read-write round trip
+	if not
+		say FAIL host9p wrote but read back $p
+	rm -f /n/host/boot/.probe >[2]/dev/null
+}
+if not
+	say FAIL host9p could not write to /n/host/boot
+
+# 5. Is IPFS mounted? Exported by `wanix serve --ipfs-api` over 9P.
+if(test -d /n/host/ipfs)
+	say OK ipfs /n/host/ipfs present
+if not
+	say FAIL ipfs /n/host/ipfs missing
+
+# 6. Are the on-demand tools staged?
+tools=()
+for(t in clip pkg ipfs){
+	if(! test -x /rc/bin/$t)
+		tools=($tools $t)
+}
+if(~ $#tools 0)
+	say OK tools clip pkg ipfs all staged
+if not
+	say FAIL tools missing: $tools
+
+say done

@@ -1,0 +1,50 @@
+function KeyRegValidRaw(string value) bool {
+    bool out;
+    c {
+        char *s;
+        int i;
+        out = 0;
+        s = o9_string_cstr(value);
+        if(s != nil && strlen(s) == 64){
+            out = 1;
+            for(i = 0; i < 64; i++)
+                if(!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
+                    out = 0;
+        }
+        free(s);
+    }
+    return out;
+}
+
+function KeyRegPasteRaw() string {
+ string out;
+ c {
+  char buf[130], *p, *end;
+  int fd, n, len, valid, i;
+  out = o9_string_from_c("");
+  len = 0;
+  fd = open("/dev/snarf", OREAD);
+  if(fd >= 0){
+   while(len < 129 && (n = read(fd, buf+len, 129-len)) > 0) len += n;
+   close(fd);
+   buf[len] = 0;
+   p = buf;
+   while(*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+   end = buf+len;
+   while(end > p && (end[-1] == ' ' || end[-1] == '\n' || end[-1] == '\r' || end[-1] == '\t')) end--;
+   valid = len < 129 && end-p == 64;
+   if(valid){
+    for(i = 0; i < 64; i++) if(!((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f'))) valid = 0;
+    if(valid){o9_string_release(out);out = o9_string_new(p,64);}
+   }
+   memset(buf,0,sizeof buf);
+  }
+ }
+ return out;
+}
+
+class PublicKeys {
+ method PublicKeys() { }
+ method bool valid(string key) { Task<bool> t = spawn KeyRegValidRaw(key); return t.await(); }
+ method string paste() { Task<string> t = spawn KeyRegPasteRaw(); return t.await(); }
+}

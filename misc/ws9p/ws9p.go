@@ -7,8 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/websocket"
-	"github.com/hugelgupf/p9/p9"
-	"tractor.dev/wanix/fs/p9kit"
+	"tractor.dev/wanix/fs/p9p"
 )
 
 var upgrader = websocket.Upgrader{
@@ -23,7 +22,6 @@ func Handle(fsys fs.FS, w http.ResponseWriter, r *http.Request, logf func(string
 	if logf == nil {
 		logf = func(format string, args ...any) {}
 	}
-	srv := p9.NewServer(p9kit.Attacher(fsys, p9kit.WithXattrAttrStore()))
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -83,7 +81,7 @@ func Handle(fsys fs.FS, w http.ResponseWriter, r *http.Request, logf func(string
 		}
 	}()
 
-	if err := srv.Handle(inR, outW); err != nil {
+	if err := p9p.Serve(fsys, inR, outW); err != nil {
 		logf("9p session ended: %v\n", err)
 	}
 }

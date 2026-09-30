@@ -1,0 +1,42 @@
+#!/bin/rc
+LOG=/tmp/ygg-start.log
+
+fn ylog {
+	echo $* >>$LOG
+}
+
+fn yggctl {
+	yggdrasilctl -endpoint tcp://127.0.0.1:9001 $*
+}
+
+# yggdrasilctl is demand-loaded from libtab like yggdrasil itself; pull it in
+# rather than failing if this runs before ygg-up installed it.
+if(! test -x /386/bin/yggdrasilctl && test -x /rc/bin/pkg)
+	pkg install yggdrasilctl >[2]/dev/null
+
+if(! test -x /386/bin/yggdrasilctl){
+	ylog 'ygg-peers: /386/bin/yggdrasilctl not present'
+	exit 'no ctl'
+}
+
+# A WISP relay currently processes CONNECT frames one at a time. Probing a
+# long list of dead peers can therefore starve a live peer's handshake.
+# Use the reachable public TLS peer shared with the VPS for this integration.
+# This is an underlay peer, not a route around Yggdrasil authentication.
+PEER=tls://23.184.48.86:1443
+
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20){
+	if(! yggctl getSelf >/dev/null >[2]/dev/null)
+		sleep 1
+}
+if(! yggctl getSelf >/dev/null >[2]/dev/null){
+	ylog 'ygg-peers: admin socket unavailable'
+	exit 'no admin'
+}
+
+if(yggctl addPeer 'uri='$PEER >/dev/null >[2]/dev/null)
+	ylog 'ygg-peers: added' $PEER
+if not
+	ylog 'ygg-peers: could not add' $PEER
+yggctl getSelf >>$LOG >[2]/dev/null
+yggctl getPeers >>$LOG >[2]/dev/null

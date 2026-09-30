@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Mount a network 9P filesystem</title>
+    <script type="module" src="../dist/wanix.min.js"></script>
+    <style>
+        body { max-width: 800px; margin: 2rem auto; font: 16px sans-serif; }
+        pre { white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Network 9P filesystem</h1>
+    <p>This page mounts the file server configured by the local Wanix server
+       at <code>network/</code>. The gateway enforces read-only access. Factotum keeps the private key on the local host.</p>
+    <label for="pairing">Local gateway pairing code</label>
+    <input id="pairing" type="password" autocomplete="off" spellcheck="false">
+    <button id="mount" type="button">Mount with factotum</button>
+    <p id="status">Ready to request a read-only mount.</p>
+    <pre id="listing"></pre>
+    <template id="mount-template">
+    <wanix-namespace id="network-host">
+        <wanix-bind dst="." src="#ramfs/new"></wanix-bind>
+        <wanix-bind type="import" dst="network" src="/.well-known/import9p"
+                    transport="websocket" protocol="9P2000" user="none" auth="factotum"></wanix-bind>
+    </wanix-namespace>
+    </template>
+    <script type="module">
+        const status = document.getElementById("status");
+        window.networkMount = { state: "waiting" };
+        document.getElementById("mount").addEventListener("click", event => {
+            event.target.disabled = true;
+            status.textContent = "Requesting mount authorization from factotum...";
+            window.networkMount = { state: "connecting" };
+            const content = document.getElementById("mount-template").content.cloneNode(true);
+            const host = content.querySelector("wanix-namespace");
+            content.querySelector("wanix-bind[type=import]").mountPairingToken = document.getElementById("pairing").value.trim();
+            document.getElementById("pairing").value = "";
+            host.addEventListener("error", event => {
+                window.networkMount = { state: "failed", error: event.detail?.error?.message || "Namespace initialization failed" };
+                status.textContent = window.networkMount.error;
+            });
+            host.addEventListener("ready", async () => {
+                try {
+                    window.networkRoot = host.root;
+                    const entries = await host.root.readDir("network");
+                    window.networkMount = { state: "mounted", entries };
+                    document.getElementById("listing").textContent = entries.join("\n");
+                    status.textContent = `Mounted at network/: ${entries.length} entries`;
+                } catch (error) {
+                    window.networkMount = { state: "failed", error: error.message };
+                    status.textContent = `Mount failed: ${error.message}`;
+                }
+            });
+            setTimeout(() => {
+                if (window.networkMount.state === "connecting") {
+                    window.networkMount = { state: "failed", error: "Timed out connecting to the file server" };
+                    status.textContent = window.networkMount.error;
+                }
+            }, 40000);
+            document.body.appendChild(content);
+        }, { once: true });
+    </script>
+</body>
+</html>

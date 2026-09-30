@@ -20,7 +20,7 @@ if [ $# -ge 1 ]; then
     fi
 
     echo "* Mounting 9p filesystem from $HOST:$PORT at /mnt"
-    sudo mount -t 9p -o trans=tcp,port=$PORT,version=9p2000.L,cache=loose,msize=524288 $HOST /mnt
+    sudo mount -t 9p -o trans=tcp,port=$PORT,version=9p2000,cache=loose,msize=524288 $HOST /mnt
 fi
 
 cd /mnt

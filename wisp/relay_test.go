@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -197,4 +198,43 @@ func TestRelayBadProto(t *testing.T) {
 		}
 	}
 	t.Fatal("timed out waiting for CLOSE on bad proto")
+}
+
+// TestRelayHonorsCheckOrigin proves a caller-supplied CheckOrigin is actually
+// installed on the upgrader. Inverting relay.defaults()'s `if checkOrigin ==
+// nil` silently swaps a rejecting policy for allow-all, which is a
+// cross-site WebSocket hijacking hole; this test kills that mutant.
+func TestRelayHonorsCheckOrigin(t *testing.T) {
+	relay := &Relay{CheckOrigin: func(*http.Request) bool { return false }}
+	srv := httptest.NewServer(relay)
+	defer srv.Close()
+
+	d := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	hdr := http.Header{}
+	hdr.Set("Origin", "https://evil.example")
+	ws, resp, err := d.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), hdr)
+	if err == nil {
+		ws.Close()
+		t.Fatal("upgrade accepted despite CheckOrigin returning false")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestRelayDefaultOriginIsPermissive pins the nil-CheckOrigin default so the
+// test above cannot be satisfied by rejecting every upgrade.
+func TestRelayDefaultOriginIsPermissive(t *testing.T) {
+	relay := &Relay{}
+	srv := httptest.NewServer(relay)
+	defer srv.Close()
+
+	d := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	hdr := http.Header{}
+	hdr.Set("Origin", "https://anywhere.example")
+	ws, _, err := d.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), hdr)
+	if err != nil {
+		t.Fatalf("default upgrade rejected: %v", err)
+	}
+	defer ws.Close()
 }

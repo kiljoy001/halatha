@@ -4,12 +4,11 @@ import (
 	"log"
 	"os"
 
-	"github.com/hugelgupf/p9/p9"
 	"go.bug.st/serial"
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs/localfs"
 	"tractor.dev/wanix/fs/net/tcp"
-	"tractor.dev/wanix/fs/p9kit"
+	"tractor.dev/wanix/fs/p9p"
 	"tractor.dev/wanix/native"
 	"tractor.dev/wanix/term"
 	"tractor.dev/wanix/wisp"
@@ -54,15 +53,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var opts []p9.ServerOpt
-	// if os.Getenv("DEBUG") != "" {
-	// opts = append(opts, p9.WithServerLogger(log.New(os.Stderr, "", log.LstdFlags)))
-	// }
-	s := p9.NewServer(p9kit.Attacher(root.NS()), opts...)
-
 	exportdev := os.Getenv("EXPORTDEV")
 	if exportdev == "" {
-		if err := s.Handle(os.Stdin, os.Stdout); err != nil {
+		if err := p9p.Serve(root.NS(), os.Stdin, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -82,7 +75,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := s.Handle(dev, dev); err != nil {
+	if err := p9p.Serve(root.NS(), dev, dev); err != nil {
 		log.Fatal(err)
 	}
 }

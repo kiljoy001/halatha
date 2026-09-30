@@ -288,11 +288,11 @@ func TestNodeMultipleHandlesIndependent(t *testing.T) {
 		w1.Write([]byte("XXX"))
 	}
 
-	// Read from f2 - should still see original data
+	// Read from f2 sees the write, with its own cursor.
 	buf3 := make([]byte, 3)
 	n3, _ := f2.Read(buf3)
-	if string(buf3[:n3]) != "llo" {
-		t.Errorf("f2 expected 'llo', got %q", string(buf3[:n3]))
+	if string(buf3[:n3]) != "XXX" {
+		t.Errorf("f2 expected 'XXX', got %q", string(buf3[:n3]))
 	}
 }
 
@@ -327,8 +327,8 @@ func TestNodeWriteAtPosition(t *testing.T) {
 	}
 }
 
-func TestNodeDataIsolation(t *testing.T) {
-	// Test that modifications to one file don't affect other open files
+func TestNodeSharedData(t *testing.T) {
+	// Open handles observe the same underlying data.
 	n := Entry("test.txt", 0644, []byte("original"))
 
 	f1, _ := n.Open(".")
@@ -338,11 +338,11 @@ func TestNodeDataIsolation(t *testing.T) {
 	w1 := f1.(interface{ Write([]byte) (int, error) })
 	w1.Write([]byte("modified"))
 
-	// Read with f2 - should still see "original"
+	// Read with f2 sees the completed write.
 	buf := make([]byte, 100)
 	n2, _ := f2.Read(buf)
-	if string(buf[:n2]) != "original" {
-		t.Errorf("expected 'original', got %q", string(buf[:n2]))
+	if string(buf[:n2]) != "modified" {
+		t.Errorf("expected 'modified', got %q", string(buf[:n2]))
 	}
 
 	f1.Close()
@@ -549,7 +549,7 @@ func TestNodeNoDeadlockWithCustomReaderWriter(t *testing.T) {
 }
 
 func TestNodeModTimeTracking(t *testing.T) {
-	// Test that modTime is tracked in the file and applied on close
+	// Successful writes update metadata immediately.
 	n := Entry("test.txt", 0644, []byte("hello"))
 
 	// Record original modTime
@@ -573,9 +573,9 @@ func TestNodeModTimeTracking(t *testing.T) {
 	wf := f.(interface{ Write([]byte) (int, error) })
 	wf.Write([]byte(" world"))
 
-	// ModTime should NOT change until close
-	if n.ModTime() != originalModTime {
-		t.Error("modTime should not change until file is closed")
+	// ModTime changes before close.
+	if !n.ModTime().After(originalModTime) {
+		t.Error("modTime should change on write")
 	}
 
 	// Close the file
@@ -619,7 +619,7 @@ func TestNodeFileOffsetOverflow(t *testing.T) {
 	var largeOffset int64
 	if maxInt == 9223372036854775807 {
 		// 64-bit platform, use a large but valid offset
-		largeOffset = int64(maxInt) - 1000
+		largeOffset = int64(maxInt) - 1
 	} else {
 		// 32-bit platform, use maxInt + 1 to test overflow handling
 		// Compute at runtime to avoid compile-time overflow on 64-bit

@@ -1,0 +1,123 @@
+#!/bin/rc
+# Post-install configuration for a browser/v86 9front terminal node.
+# Run this inside the installed 9front image after copying the Halatha payload.
+
+rfork e
+
+gridcpu=`{cat /env/HALATHA_CPU >[2]/dev/null}
+gridfs=`{cat /env/HALATHA_FS >[2]/dev/null}
+gridauth=`{cat /env/HALATHA_AUTH >[2]/dev/null}
+
+if(! test -d /n)
+	mkdir /n
+if(! test -d /n/host)
+	mkdir /n/host
+if(! test -d /n/grid)
+	mkdir /n/grid
+if(! test -d /lib/ndb)
+	mkdir /lib/ndb
+
+cat >/rc/bin/halatha-net <<'EOF'
+#!/bin/rc
+LOG=/tmp/halatha-net.log
+fn log { echo `{date -n} $* >>$LOG }
+
+log start
+for(i in 1 2 3 4 5 6 7 8 9 10){
+	if(! test -e /net/ether0)
+		sleep 1
+}
+if(! test -e /net/ether0){
+	log 'no /net/ether0'
+	exit 'no ether'
+}
+for(i in 1 2 3 4 5 6 7 8 9 10){
+	if(! test -e /net/ipifc/0/ctl)
+		ip/ipconfig >>$LOG >[2=1]
+	if(! test -e /net/ipifc/0/ctl)
+		sleep 1
+}
+if(test -e /net/ipifc/0/ctl)
+	log 'ip up'
+if not{
+	log 'ipconfig failed'
+	exit 'no ip'
+}
+if(! ps | grep -s 'ndb/dns')
+	ndb/dns -r >>$LOG >[2=1] &
+EOF
+chmod +x /rc/bin/halatha-net
+
+cat >/rc/bin/halatha-host <<'EOF'
+#!/bin/rc
+LOG=/tmp/halatha-host.log
+fn log { echo `{date -n} $* >>$LOG }
+
+if(! test -d /n)
+	mkdir /n
+if(! test -d /n/host)
+	mkdir /n/host
+
+if(test -e '#9'){
+	if(! mount -c '#9/host9p' /n/host >>$LOG >[2=1])
+		mount -c '#9/0' /n/host >>$LOG >[2=1]
+}
+if(test -e /n/host/READY)
+	log 'host9p mounted'
+if not
+	log 'host9p unavailable'
+EOF
+chmod +x /rc/bin/halatha-host
+
+cat >/rc/bin/halatha-grid <<'EOF'
+#!/bin/rc
+LOG=/tmp/halatha-grid.log
+fn log { echo `{date -n} $* >>$LOG }
+
+if(! test -e /net/ipifc/0/ctl)
+	/rc/bin/halatha-net
+
+if(test -x /rc/bin/halatha.local)
+	/rc/bin/halatha.local &
+
+if(! test -d /n/grid)
+	mkdir /n/grid
+
+if(~ $#HALATHA_FS 1){
+	log 'import fs' $HALATHA_FS
+	import $HALATHA_FS /n/grid >>$LOG >[2=1]
+}
+
+if(~ $#HALATHA_CPU 1){
+	log 'cpu' $HALATHA_CPU
+	cpu -h $HALATHA_CPU
+}
+if not{
+	echo 'HALATHA_CPU is unset; set it to your cpu server dial string'
+	echo 'example: HALATHA_CPU=tcp!<ygg-ip>!17010 halatha-grid'
+}
+EOF
+chmod +x /rc/bin/halatha-grid
+
+if(! grep -s 'halatha-net' /rc/bin/termrc){
+	echo '' >>/rc/bin/termrc
+	echo '# halatha grid terminal startup' >>/rc/bin/termrc
+	echo '/rc/bin/halatha-net &' >>/rc/bin/termrc
+	echo '/rc/bin/halatha-host &' >>/rc/bin/termrc
+	echo 'if(test -r /n/host/boot/halatha.local)' >>/rc/bin/termrc
+	echo '	rc /n/host/boot/halatha.local &' >>/rc/bin/termrc
+	echo 'if not if(test -x /rc/bin/halatha.local)' >>/rc/bin/termrc
+	echo '	/rc/bin/halatha.local &' >>/rc/bin/termrc
+}
+
+if(! test -e /usr/glenda/lib/profile)
+	touch /usr/glenda/lib/profile
+if(! grep -s 'halatha-grid' /usr/glenda/lib/profile){
+	echo '' >>/usr/glenda/lib/profile
+	echo 'fn grid {' >>/usr/glenda/lib/profile
+	echo '	/rc/bin/halatha-grid' >>/usr/glenda/lib/profile
+	echo '}' >>/usr/glenda/lib/profile
+}
+
+echo 'halatha grid terminal configured'
+echo 'Set HALATHA_CPU and optionally HALATHA_FS before running grid.'

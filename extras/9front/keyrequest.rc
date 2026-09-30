@@ -1,0 +1,40 @@
+#!/bin/rc
+# Build and launch the VM's Objective-9C proposal client locally.
+# No enrollment occurs until an administrator approves the submitted key.
+
+src=/n/host/boot
+dst=/tmp/halatha-keyrequest
+echo 'BUILDING keyrequest 386 application' >$src/keyrequest-status
+if(! test -d $dst)
+	mkdir $dst
+for(f in keyrequest.o9 keyrequest-client.o9 keyrequest-publickeys.o9){
+	ready=()
+	for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20){
+		if(~ $#ready 0){
+			if(test -r $src/$f)
+				ready=1
+			if(~ $#ready 0)
+				sleep 1
+		}
+	}
+	if(~ $#ready 0){
+		echo 'FAIL keyrequest source missing: '$f >$src/keyrequest-status
+		exit missing
+	}
+}
+cp $src/keyrequest.o9 $dst/keyrequest.o9
+cp $src/keyrequest-client.o9 $dst/client.o9
+cp $src/keyrequest-publickeys.o9 $dst/publickeys.o9
+cd $dst
+if(! test -x keyrequest.bin){
+	if(! o9build keyrequest.o9 keyrequest.bin >/tmp/keyrequest-build.log >[2=1]){
+		echo 'FAIL keyrequest 386 build' >/n/host/boot/keyrequest-status
+		cat /tmp/keyrequest-build.log >>/n/host/boot/keyrequest-status
+		exit build
+	}
+}
+if(~ $1 build){
+	echo 'OK keyrequest 386 build' >/n/host/boot/keyrequest-status
+	exit ''
+}
+exec ./keyrequest.bin

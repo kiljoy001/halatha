@@ -1,0 +1,66 @@
+#!/bin/rc
+# halatha-bind: union the verified host binary tree into /bin.
+#
+# This MUST run before rio starts, not from termrc. rio does
+# rfork(RFNAMEG) at startup (rio.c:290) and again for every window
+# (wind.c:1355), so it snapshots the namespace at fork time. A bind done
+# later -- as halatha.local used to do -- lands in the boot namespace and
+# rio never sees it: the bind succeeds, the log says so, and /bin is still
+# empty in every window.
+#
+# Sourced from $home/lib/profile ahead of `exec rio`.
+
+if(test -d /n/host/bin){
+	# libtab verification runs in the browser and can take a moment; wait
+	# briefly for its verdict. rc has no break, so guard the body instead.
+	got=()
+	hstatus=initializing
+	for(i in 1 2 3 4 5 6 7 8 9 10){
+		if(~ $#got 0){
+			if(test -f /n/host/bin/STATUS){
+				hstatus=`{cat /n/host/bin/STATUS}
+				hstatus=$"hstatus
+				if(~ $hstatus VERIFIED:* REJECTED:*)
+					got=1
+			}
+			if(~ $#got 0)
+				sleep 1
+		}
+	}
+	if(~ $#got 0)
+		echo 'halatha: timed out waiting for verification: '^$hstatus >[1=2]
+	if not {
+		if(~ $hstatus VERIFIED:*){
+			bind -a /n/host/bin /bin
+			bind -a /n/host/bin /386/bin
+		}
+		if not
+			echo 'halatha: refusing unverified /n/host/bin: '^$hstatus >[1=2]
+	}
+}
+
+# Mount the host's attested binary tree over 9P. This must run here, in
+# the profile, for the same reason the bind above does: rio rforks
+# RFNAMEG, so a mount done from termrc lands in the boot namespace and no
+# window ever sees it.
+#
+# halatha.local does the MOUNT in the boot namespace, which rio inherits.
+# Only the BIND has to be repeated here: rio rforks RFNAMEG per window, so
+# a bind made before this point is not visible inside them.
+#
+# Run it with `rc`, NEVER with `.`: hostbin exits on every path, including
+# success, and a sourced exit would terminate this profile before
+# `exec rio` and leave the guest with no desktop.
+#
+# Prefer the host copy: the page refreshes /n/host/boot on every load,
+# whereas /rc/bin is only as new as the last image build.
+if(test -r /n/host/boot/hostbin.rc)
+	rc /n/host/boot/hostbin.rc bind
+if not
+	if(test -x /rc/bin/hostbin)
+		/rc/bin/hostbin bind
+
+# Self-check from here, after the bind and inside the namespace rio will
+# inherit. Backgrounded so a slow /n/host never delays the desktop.
+if(test -x /rc/bin/halatha-watch)
+	/rc/bin/halatha-watch &

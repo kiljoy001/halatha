@@ -37,6 +37,17 @@ per-byte serial 9P channel. Halatha replaces and extends that:
   images.
 - **halatha guest extras (`extras/halatha`).** `halctl` and supporting
   guest tooling.
+- **Host services exported as 9P filesystems.** `wanix serve` can mount
+  host-side services into the namespace the guest already imports at
+  `/n/host`, so the guest reaches them with ordinary file operations and no
+  guest-side configuration: IPFS via a Kubo node (`fs/ipfsfs`) and a
+  Yggdrasil mesh node via its admin socket (`fs/yggfs`). See
+  [Host services over 9P](#host-services-over-9p).
+- **Same-origin WISP relay.** `wanix serve` hosts a WebSocket-to-TCP relay
+  at `/.well-known/wisp`, giving the guest real outbound TCP without a
+  separate relay process. Egress is restricted to Yggdrasil peers, 9P
+  (`564`) and Plan 9 grid ports, and loopback, RFC 1918 and the host's own
+  mesh address are refused.
 
 The sections below document the Wanix embeddable runtime, carried forward
 essentially unchanged as Halatha's base.
@@ -127,6 +138,100 @@ Transfers flow guest `devusb` → `usbns` HCI → 9P files under
 `/n/host/usb/<id>/{req,resp}` → the page's WebUSB bridge. No guest-side
 driver code was written for the bridge; the native Plan 9 USB stack drives
 real browser-claimed devices.
+
+## Host services over 9P
+
+The guest already imports the host namespace at `/n/host`. `wanix serve`
+can union host-side services into that namespace, so the guest reaches them
+with `cat`, `ls` and `cp` — no guest daemon, no extra port, and nothing to
+configure inside the VM.
+
+This is deliberate: these services stay on the host's loopback and the
+guest only ever sees a filesystem. The guest is untrusted browser code, so
+exposing an HTTP API or admin socket to it directly would hand a page the
+ability to reconfigure the host. A read-only 9P view cannot.
+
+```sh
+wanix serve \
+  --ipfs-api=http://127.0.0.1:5001 \
+  --ygg-admin=/run/yggdrasil/yggdrasil.sock \
+  /srv/www
+```
+
+Each mount is optional and independent. If a service is unreachable at
+startup, `wanix serve` says so in one line and continues without that
+mount rather than failing to boot.
+
+### IPFS (`fs/ipfsfs`)
+
+Mounted at `/n/host/ipfs` from a Kubo node's HTTP API:
+
+```
+/n/host/ipfs/                 pinned CIDs, plus "local"
+/n/host/ipfs/<cid>            a file, or a directory to walk into
+/n/host/ipfs/<cid>/<path>     any path inside a directory CID
+/n/host/ipfs/local/           recursive pins; copying a file here adds + pins it
+```
+
+```sh
+ls  /n/host/ipfs/
+cat /n/host/ipfs/<cid>/readme
+cp  myfile /n/host/ipfs/local/    # adds and pins
+```
+
+It talks to a Kubo node rather than a public gateway because a gateway
+cannot back a filesystem: a directory CID returns a rendered HTML index,
+not a listing, so `ReadDir` is impossible. Kubo's API returns JSON with a
+name, size and type per entry, and allows pinning, so content written here
+persists instead of being evicted from someone else's cache.
+
+### Yggdrasil (`fs/yggfs`)
+
+Mounted read-only at `/n/host/ygg` from a host Yggdrasil daemon's admin
+socket, so the guest can use the host's already-connected mesh node instead
+of running its own:
+
+```
+/n/host/ygg/address     the node's Yggdrasil IPv6 address
+/n/host/ygg/subnet      the node's /64
+/n/host/ygg/key         public key
+/n/host/ygg/version     build name and version
+/n/host/ygg/peers       one peer per line: state, uri, address, uptime, cost
+/n/host/ygg/sessions    one session per line: address, uptime, key
+/n/host/ygg/status      human summary — the file to cat when something is wrong
+```
+
+```sh
+term% cat /n/host/ygg/status
+yggdrasil 0.5.14
+address 201:dd03:96a:1c97:7b9a:98ee:c9ab:1e60
+subnet  301:dd03:96a:1c97::/64
+routes  8
+peers   3 up / 4 total
+sessions 2
+```
+
+The mount is read-only by construction: `yggfs` issues no mutating admin
+request, so a page cannot add or remove the host node's peers. `stat` is
+answered without touching the socket, so listing the directory does not
+cost one admin round trip per file, and a wedged daemon cannot hang a read
+— which would otherwise hang the guest's whole filesystem rather than just
+that file.
+
+Running the daemon on the host rather than in the guest also sidesteps the
+WISP egress policy, which refuses loopback, RFC 1918 and the host's own
+mesh address; the guest gets a mesh view without any hole in that filter.
+
+**Socket permissions.** The admin socket is typically
+`srw-rw---- root:yggdrasil`, so the user `wanix serve` runs as must be in
+the `yggdrasil` group:
+
+```sh
+usermod -aG yggdrasil <service-user>
+```
+
+Under systemd, add `SupplementaryGroups=yggdrasil` to the unit as well —
+`User=` alone does not pick up the account's supplementary groups.
 
 ## Use Cases
 
@@ -560,9 +665,10 @@ are welcome on the Halatha repo.
 ## AI Disclosure
 
 Parts of Halatha — particularly the Plan 9 integration layer (the `usbns`
-kernel HCI driver, the `devvirtio9p` bridge, the image builder, and the
-9legacy userland build flow) — were developed with AI assistance. A human
-designs, verifies, and is responsible for every change.
+kernel HCI driver, the `devvirtio9p` bridge, the image builder, the
+9legacy userland build flow, and the host service mounts) — were developed
+with AI assistance. A human designs, verifies, and is responsible for every
+change.
 
 ## License
 

@@ -1,0 +1,8 @@
+import "stdlib/process.o9";
+import "client.o9";
+main {
+ Process args = new Process();
+ KeyRequestClient remote = new KeyRequestClient();
+ if(args.argc() != 5) { print("usage: request-probe endpoint action client-public-key transport-public-key\n"); }
+ else { print(remote.submit(args.arg(1), args.arg(2), args.arg(3), args.arg(4)), "\n"); }
+}

@@ -1,0 +1,12 @@
+# Files the release page loads that mkrelease cannot see in its HTML.
+# One path per line; "dir/" ships a whole tree; globs are allowed.
+# "external <url>" allows the page to load from another host.
+# Build with: make release
+
+# wanix.min.js loads its runtime relative to itself; the page's
+# <wanix-namespace debug> selects the debug build.
+dist/wanix.debug.wasm
+
+# ?state=copysh boots copy.sh's saved 9front state instead of the ISO.
+# Opt-in only: the default boot uses the ISO shipped in this release.
+external https://i.copy.sh/9front_state-v3.bin.zst

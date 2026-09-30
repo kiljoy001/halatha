@@ -149,3 +149,41 @@ func TestBuildCertAuth(t *testing.T) {
 		t.Fatal("all-garbage paths should yield nil (open) auth")
 	}
 }
+
+// TestCheckOriginAllowed pins the cross-site WebSocket hijacking policy used
+// by the public deployment. Any loosening of this predicate lets a hostile
+// page open a WISP relay session against a visitor's browser.
+func TestCheckOriginAllowed(t *testing.T) {
+	allowed := []string{
+		"", // non-browser clients send no Origin
+		"https://halatha.rentonsoftworks.com",
+		"http://localhost:7654",
+		"http://127.0.0.1:7654",
+		"http://localhost:3000",
+	}
+	denied := []string{
+		"https://evil.example",
+		"http://halatha.rentonsoftworks.com",         // plaintext, not the TLS origin
+		"https://halatha.rentonsoftworks.com.evil.io", // suffix attack
+		"https://evil.io/?x=https://halatha.rentonsoftworks.com",
+		"http://127.0.0.1:9999",
+		"null",
+	}
+
+	for _, o := range allowed {
+		r := httptest.NewRequest("GET", "/.well-known/wisp", nil)
+		if o != "" {
+			r.Header.Set("Origin", o)
+		}
+		if !checkOriginAllowed(r) {
+			t.Errorf("origin %q rejected, want allowed", o)
+		}
+	}
+	for _, o := range denied {
+		r := httptest.NewRequest("GET", "/.well-known/wisp", nil)
+		r.Header.Set("Origin", o)
+		if checkOriginAllowed(r) {
+			t.Errorf("origin %q allowed, want rejected", o)
+		}
+	}
+}

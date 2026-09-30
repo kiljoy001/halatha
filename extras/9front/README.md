@@ -28,10 +28,12 @@ This directory provides the 9front side:
 
 ## Remastering the 9front image
 
-The Phase-1 example boots the upstream 9front 386 ISO as-is (VGA/rio, no host
-mount). To add the bridge, the guest image needs `serial9p` and `termrc.local`
-in its root filesystem. This requires a 9front build environment and can't be
-fully automated from Linux/Docker here; the steps are:
+The Phase-1 example boots the upstream 9front 386 ISO as-is via v86's hard-disk
+path (`hda`, `boot=c`; the cdrom path reaches SeaBIOS but reports no bootable
+media in this v86 build). That gives VGA/rio with no host mount. To add the
+bridge, the guest image needs `serial9p` and `termrc.local` in its root
+filesystem. This requires a 9front build environment and can't be fully
+automated from Linux/Docker here; the steps are:
 
 1. Boot a 9front 386 instance (in v86 or QEMU) from the upstream ISO.
 2. Copy `serial9p.c` + `mkfile` into it and run `mk`, then
@@ -54,6 +56,11 @@ fully automated from Linux/Docker here; the steps are:
      style="width:100%;height:100%"></wanix-vm>
    ```
    From 9front rc: `ls /n/host` should list the wanix namespace.
+
+The repeatable authoring path is captured in
+[`pipeline/README.md`](pipeline/README.md): create a raw target disk, install
+9front in QEMU, attach the Halatha payload ISO, run its installer, then serve
+the resulting raw disk to v86/CDN as `hda`.
 
 ## Status / verification
 
@@ -168,6 +175,14 @@ Two pieces, in two places:
    `halatha.local` is a real rc file (not a Go raw-string const) precisely so
    it can use rc backtick command substitution (`{grep ...}`) to read the peers
    file — backticks would close a Go raw string.
+
+   For day-to-day iteration, do **not** rebuild the disk image just to change
+   service startup. `examples/basic-v86-9legacy-direct.html` refreshes
+   `/n/host/boot/halatha.local`, `/n/host/boot/ygg-up.rc`, and
+   `/n/host/boot/yggdrasil.peers` from this directory every page load. Smoke a
+   changed script inside the guest with `rc /n/host/boot/ygg-up.rc`, then inspect
+   `/tmp/ygg-start.log`. The disk image should be treated as a golden base and
+   rebuilt only when kernel/root contents must change.
 
 2. **Page side — the TCP bridge (WISP relay).** The relay is *not* guest-
    startable: it lives in the browser/v86 layer. v86's default `fetch` backend

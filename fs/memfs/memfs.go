@@ -35,7 +35,11 @@ func From(m fskit.MapFS) *FS {
 	fsys := New()
 	// First pass: create all nodes and implicit directories
 	for name, node := range m {
-		fsys.nodes[name] = fskit.RawNode(node)
+		if n, ok := node.(*fskit.Node); ok {
+			fsys.nodes[name] = fskit.CloneNode(n)
+		} else {
+			fsys.nodes[name] = fskit.RawNode(node)
+		}
 		// Create implicit parent directories
 		dir := path.Dir(name)
 		for dir != "." {
@@ -501,31 +505,7 @@ func (fsys *FS) Truncate(name string, size int64) (err error) {
 		return &fs.PathError{Op: "truncate", Path: name, Err: fs.ErrNotExist}
 	}
 
-	// Get current data and resize it
-	data := node.Data()
-
-	if size < 0 {
-		return &fs.PathError{Op: "truncate", Path: name, Err: fs.ErrInvalid}
-	}
-
-	if size == int64(len(data)) {
-		// No change needed
-		return nil
-	}
-
-	var newData []byte
-	if size > int64(len(data)) {
-		// Extend with null bytes
-		newData = make([]byte, size)
-		copy(newData, data)
-	} else {
-		// Truncate to size
-		newData = data[:size]
-	}
-
-	// Update the existing node's data without replacing the node
-	fskit.SetData(node, newData)
-	return nil
+	return node.Truncate(size)
 }
 
 func (fsys *FS) Remove(name string) (err error) {

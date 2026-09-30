@@ -1,0 +1,91 @@
+#!/bin/rc
+# Install the Halatha 9front payload over HTTP from the QEMU host.
+
+rfork e
+
+base=$1
+if(~ $#base 0)
+	base=http://10.0.2.2:7072/local/halatha-9front-payload
+
+fn usage {
+	echo 'usage: install-halatha-http.rc [base-url]' >[1=2]
+	exit usage
+}
+
+if(~ $#* 2 3 4 5 6 7 8 9)
+	usage
+
+fn ensure_dir {
+	if(! test -d $1)
+		mkdir $1
+}
+
+fn fetch {
+	rel=$1
+	dst=$2
+	tmp=/tmp/halatha.fetch.$pid
+	if(! hget -o $tmp $base/$rel){
+		rm -f $tmp >[2]/dev/null
+		echo 'halatha http install: fetch failed:' $base/$rel >[1=2]
+		exit fetch
+	}
+	if(test -e $dst)
+		rm -f $dst
+	cp $tmp $dst
+	rm -f $tmp
+}
+
+for(d in /386/bin /386/lib /sys/include /rc/bin /lib /sys/src/cmd /sys/lib/o9 /sys/lib/o9/stdlib){
+	ensure_dir $d
+}
+
+fetch 386/bin/o9c /386/bin/o9c
+fetch 386/bin/yggdrasil /386/bin/yggdrasil
+fetch 386/bin/yggdrasilctl /386/bin/yggdrasilctl
+fetch 386/lib/libo9.a /386/lib/libo9.a
+
+fetch rc/bin/halatha.local /rc/bin/halatha.local
+fetch rc/bin/o9build /rc/bin/o9build
+fetch rc/bin/o9plumb /rc/bin/o9plumb
+fetch rc/bin/o9plumbbuild /rc/bin/o9plumbbuild
+fetch rc/bin/o9proj /rc/bin/o9proj
+fetch rc/bin/termrc.local.halatha /rc/bin/termrc.local.halatha
+fetch rc/bin/ygg-peers /rc/bin/ygg-peers
+fetch rc/bin/ygg-up /rc/bin/ygg-up
+
+fetch lib/yggdrasil.peers /lib/yggdrasil.peers
+fetch sys/include/o9.h /sys/include/o9.h
+
+fetch sys/src/cmd/o9_dispatch.s /sys/src/cmd/o9_dispatch.s
+fetch sys/src/cmd/o9_runtime.c /sys/src/cmd/o9_runtime.c
+fetch sys/src/cmd/o9_tab_discard.c /sys/src/cmd/o9_tab_discard.c
+
+fetch sys/lib/o9/stdlib/auth_facade_app.o9 /sys/lib/o9/stdlib/auth_facade_app.o9
+fetch sys/lib/o9/stdlib/buffer.o9 /sys/lib/o9/stdlib/buffer.o9
+fetch sys/lib/o9/stdlib/bytes.o9 /sys/lib/o9/stdlib/bytes.o9
+fetch sys/lib/o9/stdlib/collections.o9 /sys/lib/o9/stdlib/collections.o9
+fetch sys/lib/o9/stdlib/draw.o9 /sys/lib/o9/stdlib/draw.o9
+fetch sys/lib/o9/stdlib/file.o9 /sys/lib/o9/stdlib/file.o9
+fetch sys/lib/o9/stdlib/io.o9 /sys/lib/o9/stdlib/io.o9
+fetch sys/lib/o9/stdlib/math.o9 /sys/lib/o9/stdlib/math.o9
+fetch sys/lib/o9/stdlib/namespace.o9 /sys/lib/o9/stdlib/namespace.o9
+fetch sys/lib/o9/stdlib/net.o9 /sys/lib/o9/stdlib/net.o9
+fetch sys/lib/o9/stdlib/path.o9 /sys/lib/o9/stdlib/path.o9
+fetch sys/lib/o9/stdlib/process.o9 /sys/lib/o9/stdlib/process.o9
+fetch sys/lib/o9/stdlib/random.o9 /sys/lib/o9/stdlib/random.o9
+fetch sys/lib/o9/stdlib/string.o9 /sys/lib/o9/stdlib/string.o9
+fetch sys/lib/o9/stdlib/time.o9 /sys/lib/o9/stdlib/time.o9
+
+chmod +x /386/bin/o9c /386/bin/yggdrasil /386/bin/yggdrasilctl
+chmod +x /rc/bin/o9* /rc/bin/halatha.local /rc/bin/ygg-peers /rc/bin/ygg-up
+
+if(! grep -s 'halatha.local' /rc/bin/termrc){
+	echo '' >>/rc/bin/termrc
+	echo '# halatha optional local boot hook' >>/rc/bin/termrc
+	echo 'if(test -r /n/host/boot/halatha.local)' >>/rc/bin/termrc
+	echo '	rc /n/host/boot/halatha.local &' >>/rc/bin/termrc
+	echo 'if not if(test -x /rc/bin/halatha.local)' >>/rc/bin/termrc
+	echo '	/rc/bin/halatha.local &' >>/rc/bin/termrc
+}
+
+echo 'halatha http install: done'

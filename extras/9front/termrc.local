@@ -20,3 +20,8 @@ if(test -x /bin/serial9p){
 	if(test -e /srv/host)
 		mount -c /srv/host /n/host &
 }
+
+# Halatha core service hook: start Yggdrasil after networking comes up.
+# Background it so rio/terminal startup never waits on DHCP or peer dialing.
+if(test -x /rc/bin/halatha.local)
+	/rc/bin/halatha.local &

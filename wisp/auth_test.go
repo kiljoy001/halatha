@@ -284,6 +284,53 @@ func TestCertAuthNonceExpiry(t *testing.T) {
 	}
 }
 
+// TestCertAuthTokenExpiry proves an admission token stops working once its
+// TTL lapses. Mutating CheckToken's `!ok || time.Now().After(expiry)` to
+// `!ok && ...` makes expired tokens admissible; this test kills that mutant.
+func TestCertAuthTokenExpiry(t *testing.T) {
+	rootCert, rootKey, rootPEM := mkRootCA(t)
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, leafPEM := mkLeaf(t, rootCert, rootKey, &leafKey.PublicKey, 2)
+	a := &CertAuth{Roots: [][]byte{rootPEM}, TokenTTL: 20 * time.Millisecond}
+
+	nonce, err := a.IssueChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := signDigest(t, leafKey, sha256sum(nonce))
+	tok, err := a.Verify(leafPEM, nonce, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if a.CheckToken(tok) {
+		t.Fatal("expired token accepted")
+	}
+}
+
+// TestCertAuthTokenValidBeforeExpiry pins the other side of the boundary so
+// the expiry check cannot be satisfied by rejecting everything.
+func TestCertAuthTokenValidBeforeExpiry(t *testing.T) {
+	rootCert, rootKey, rootPEM := mkRootCA(t)
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, leafPEM := mkLeaf(t, rootCert, rootKey, &leafKey.PublicKey, 2)
+	a := &CertAuth{Roots: [][]byte{rootPEM}, TokenTTL: 10 * time.Second}
+
+	nonce, err := a.IssueChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := signDigest(t, leafKey, sha256sum(nonce))
+	tok, err := a.Verify(leafPEM, nonce, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.CheckToken(tok) {
+		t.Fatal("fresh token rejected")
+	}
+}
+
 func TestCertAuthHandler(t *testing.T) {
 	rootCert, rootKey, rootPEM := mkRootCA(t)
 	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

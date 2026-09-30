@@ -1,0 +1,87 @@
+diff --git a/sys/src/9/pc/devvirtio9p.c b/sys/src/9/pc/devvirtio9p.c
+index c2eef8765..eb37f9d1d 100644
+--- a/sys/src/9/pc/devvirtio9p.c
++++ b/sys/src/9/pc/devvirtio9p.c
+@@ -27,6 +27,13 @@
+  * (+extension) and the Twstat stat; on the way back Rversion, Rerror
+  * (map the errno and drop the trailing errno[4]), and the stat entries
+  * in Rstat and directory reads.
++ *
++ * Build mode: the 9P2000.u shim is compiled in only with -DV9_9U, for
++ * testing against qemu's -virtfs (which speaks .u). Without it the driver
++ * speaks pure 9P2000 end to end, for the v86 path where Virtio9pHandler
++ * (v86 lib/9p.js) is a raw frame relay to the Go fs/p9p server (plain
++ * 9P2000): no .u field rewriting, no errno mapping, no .u/9P directory
++ * offset divergence. The mount contract is unchanged: mount -c '#9/0' /n/host.
+  */
+ #include "u.h"
+ #include "../port/lib.h"
+@@ -646,6 +653,7 @@ v9flush(Ctlr *c)
+ 	clearfids(c);
+ }
+ 
++#ifdef V9_9U
+ /*
+  * The directory-fid set: only fids that are directories are stored
+  * (presence => directory). It is touched only from the single mount
+@@ -733,6 +741,7 @@ dirsoffadv(Ctlr *c, u32int fid, long n)
+ 		}
+ 	qunlock(&c->fidlk);
+ }
++#endif /* V9_9U */
+ 
+ static void
+ clearfids(Ctlr *c)
+@@ -751,6 +760,7 @@ clearfids(Ctlr *c)
+ 	qunlock(&c->fidlk);
+ }
+ 
++#ifdef V9_9U
+ /*
+  * 9P2000 and 9P2000.u stat entries differ only in a trailing
+  * extension[s] n_uid[4] n_gid[4] n_muid[4] that .u appends after muid[s].
+@@ -1032,6 +1042,28 @@ rfixup(Ctlr *cl, Slot *s)
+ 		return;
+ 	}
+ }
++#else /* !V9_9U: pure 9P2000 peer (v86 Virtio9pHandler -> Go fs/p9p) */
++/*
++ * The wire is plain 9P2000 in both directions, so there is nothing to
++ * rewrite: no .u field appending on T-messages, no .u->9P stat stripping,
++ * no errno mapping, no .u/9P directory-offset divergence (the peer returns
++ * plain stat entries with no "." / "..", and a plain Rversion). Forward
++ * the request verbatim and leave the reply as the device delivered it
++ * (s->inlen was set by the virtqueue used-ring harvest in v9interrupt).
++ */
++static long
++tshim(uchar *m, long n, uchar *o)
++{
++	memmove(o, m, n);
++	return n;
++}
++
++static void
++rfixup(Ctlr *cl, Slot *s)
++{
++	USED(cl, s);
++}
++#endif /* V9_9U */
+ 
+ static Ctlr*
+ ctlrindex(int i)
+@@ -1211,6 +1243,7 @@ v9write(Chan *c, void *a, long n, vlong)
+ 
+ 	outlen = tshim(m, n, s->out);
+ 
++#ifdef V9_9U
+ 	/* a directory read needs its offset mapped into qemu's 9P2000.u space.
+ 	 * the braces matter: PBIT64 is a multi-statement macro. */
+ 	if(s->op == Tread){
+@@ -1219,6 +1252,7 @@ v9write(Chan *c, void *a, long n, vlong)
+ 			PBIT64(s->out+BIT32SZ+BIT8SZ+BIT16SZ+BIT32SZ, soff);
+ 		}
+ 	}
++#endif
+ 
+ 	submit(cl, s, outlen);
+ 	return n;

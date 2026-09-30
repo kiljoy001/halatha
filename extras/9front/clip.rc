@@ -1,0 +1,146 @@
+#!/bin/rc
+# Browser clipboard <-> Rio snarf. Keep mounts private to this process.
+rfork ne
+
+# Do not silently delegate to clip.bin: the older o9 implementation cannot
+# attach to this Rio from termrc and truncates text at 8191 bytes.
+root=/n/host/clip/text
+if(! test -e $root && test -e /n/wanix/clip/text)
+	root=/n/wanix/clip/text
+snarf=/dev/snarf
+mountpoint=/mnt/clip
+
+fn find_snarf {
+	if(! test -e $snarf){
+		if(test -e /mnt/wsys/snarf)
+			snarf=/mnt/wsys/snarf
+		if not {
+			mkdir -p $mountpoint
+			for(s in /srv/rio.*){
+				if(! test -e $snarf){
+					# 9legacy rejects empty and "none" attach names. A
+					# persistent hidden window supplies its real snarf.
+					if(mount $s $mountpoint 'new -hide -dx 200 -dy 150' >[2]/dev/null)
+						snarf=$mountpoint/snarf
+				}
+			}
+		}
+	}
+	test -e $snarf
+}
+
+fn same_clip {
+	$compare -s $1 $2
+}
+
+fn remember {
+	# Recreate snapshots: truncating and reusing their qids can expose stale
+	# contents through the lean guest's filesystem cache after a clear.
+	rm -f $state/last
+	cat $1 >$state/last
+}
+
+fn sync_loop {
+	# Snapshots advance only after successful reads AND writes. Read each
+	# endpoint once per pass so a changing file is never acknowledged with
+	# different contents from those actually delivered. cat has no 8K cap.
+	while(sleep 1){
+		if(find_snarf && test -e $root){
+			rm -f $state/host $state/guest
+			if(cat $root >$state/host && cat $snarf >$state/guest){
+				if(! same_clip $state/host $state/last){
+					# >> opens OWRITE; Rio replaces snarf on close.
+					if(cat $state/host >>$snarf)
+						remember $state/host
+				}
+				if not if(! same_clip $state/guest $state/last){
+					if(cat $state/guest >$root)
+						remember $state/guest
+				}
+			}
+		}
+	}
+}
+
+sub=help
+if(! ~ $#* 0){
+	sub=$1
+	shift
+}
+
+switch($sub){
+case sync daemon auto
+	# A new rc gives the worker its own pid and namespace, even when
+	# started by termrc before Rio. It waits for Rio without delaying boot.
+	rc $0 run </dev/null >>/tmp/clip.log >[2=1] &
+
+case run
+	state=/tmp/clip-sync
+	if(test -r $state/pid){
+		owner=`{cat $state/pid}
+		if(! ~ $#owner 0 && ! test -d /proc/$owner){
+			rm -f $state/pid $state/host $state/guest $state/last
+			rm $state
+		}
+	}
+	# mkdir is atomic; ps | grep used to match the starter itself.
+	if(! mkdir $state >[2]/dev/null)
+		exit 'clipboard sync already running'
+	echo $pid >$state/pid
+	fn sigexit {
+		rm -f $state/pid $state/host $state/guest $state/last
+		rm $state
+	}
+	# The lean image omits cmp. The browser preloads and verifies it in
+	# /n/host/bin; cache it locally instead of paging over 9P each tick.
+	compare=/bin/cmp
+	if(! test -x $compare){
+		compare=/tmp/clip-cmp
+		for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15){
+			if(! test -r /n/host/bin/cmp)
+				sleep 1
+		}
+		if(! cp /n/host/bin/cmp $compare){
+			echo 'clip: cmp unavailable; clipboard sync cannot start' >[1=2]
+			exit nocmp
+		}
+		chmod +x $compare
+	}
+	cp /dev/null $state/last
+	sync_loop
+
+case in get paste
+	if(! find_snarf)
+		exit 'Rio snarf unavailable'
+	if(! cat $root >>$snarf)
+		exit 'clipboard import failed'
+
+case out put snarf
+	if(! find_snarf)
+		exit 'Rio snarf unavailable'
+	if(! cat $snarf >$root)
+		exit 'clipboard export failed'
+
+case set
+	if(! find_snarf)
+		exit 'Rio snarf unavailable'
+	if(! echo -n $* >>$snarf)
+		exit 'snarf write failed'
+	if(! cat $snarf >$root)
+		exit 'clipboard export failed'
+
+case print -p
+	if(! find_snarf)
+		exit 'Rio snarf unavailable'
+	cat $snarf
+
+case *
+	echo 'usage: clip in|out|sync|set <text>|print'
+	echo 'sync runs once per second; host changes win simultaneous edits.'
+	echo '--- host ---'
+	cat $root
+	if(find_snarf){
+		echo '--- Rio snarf ---'
+		cat $snarf
+	}
+}

@@ -149,6 +149,14 @@ func main() {
 			failf("%v", err)
 		}
 	}
+	// Always install the bind hook when virtio-9p is in play: the host bin
+	// tree only exists over that bridge, and the bind has to happen before
+	// rio forks its namespace.
+	if *virtio9p {
+		if err := installHalathaBind(&entries, *srcdir); err != nil {
+			failf("%v", err)
+		}
+	}
 	if *o9dir != "" {
 		if info, err := os.Stat(*o9dir); err != nil || !info.IsDir() {
 			fmt.Fprintf(os.Stderr, "mk9legacyimg: -o9 %q not found; skipping o9c toolchain bundle\n", *o9dir)
@@ -1057,10 +1065,24 @@ func patchEntries(entries *[]archiveEntry, serialPath, srcdir, serialDev string)
 		termrc.Data = append(termrc.Data, []byte(block)...)
 	}
 	const hookMarker = "# halatha optional local boot hook"
-	if !bytes.Contains(termrc.Data, []byte(hookMarker)) {
-		block := "\n" + hookMarker + "\n" +
-			"if(test -x /rc/bin/halatha.local)\n" +
-			"\t/rc/bin/halatha.local &\n"
+	hookBody := "if(test -r /n/host/boot/halatha.local)\n" +
+		"\trc /n/host/boot/halatha.local &\n" +
+		"if not if(test -x /rc/bin/halatha.local)\n" +
+		"\t/rc/bin/halatha.local &\n"
+	// An older image may already carry the marker with the previous,
+	// image-only hook. Presence of the marker alone is not enough: replace a
+	// stale block so rebuilding an already-patched image upgrades it to the
+	// host-served form instead of silently keeping the old one.
+	const staleHook = "if(test -x /rc/bin/halatha.local)\n\t/rc/bin/halatha.local &\n"
+	switch {
+	case bytes.Contains(termrc.Data, []byte(hookBody)):
+		// already current
+	case bytes.Contains(termrc.Data, []byte(hookMarker)):
+		termrc.Data = bytes.Replace(termrc.Data,
+			[]byte(hookMarker+"\n"+staleHook),
+			[]byte(hookMarker+"\n"+hookBody), 1)
+	default:
+		block := "\n" + hookMarker + "\n" + hookBody
 		if len(termrc.Data) > 0 && termrc.Data[len(termrc.Data)-1] != '\n' {
 			termrc.Data = append(termrc.Data, '\n')
 		}
@@ -1126,6 +1148,17 @@ func patchVirtio9pEntries(entries *[]archiveEntry) error {
 	}
 	termrc.Data = patchTermRCContents(termrc.Data)
 	termrc.Data = stripSerial9pBlock(termrc.Data)
+	termrc.Data = bytes.ReplaceAll(termrc.Data,
+		[]byte("mount -c '#9/0' /n/host\n"),
+		[]byte("if(! mount -c '#9/host9p' /n/host >[2]/tmp/wanix9p.err)\n"+
+			"\tif(! mount -c '#9/0' /n/host >>[2]/tmp/wanix9p.err)\n"+
+			"\t\techo 'wanix: virtio-9p mount failed; see /tmp/wanix9p.err' >/dev/cons\n"+
+			"if(test -d /n/host){\n"+
+			"\twanixmark host9p-mounted\n"+
+			"\tif(! test -d /n/host/boot)\n"+
+			"\t\tmkdir /n/host/boot\n"+
+			"\tcat /tmp/wanixboot.log >>/n/host/boot/guest.log\n"+
+			"}\n"))
 
 	marker := "# wanix /n/host bridge over virtio-9p"
 	if !bytes.Contains(termrc.Data, []byte(marker)) {
@@ -1134,17 +1167,39 @@ func patchVirtio9pEntries(entries *[]archiveEntry) error {
 			"\tmkdir /n\n" +
 			"if(! test -d /n/host)\n" +
 			"\tmkdir /n/host\n" +
-			"mount -c '#9/0' /n/host\n"
+			"if(! mount -c '#9/host9p' /n/host >[2]/tmp/wanix9p.err)\n" +
+			"\tif(! mount -c '#9/0' /n/host >>[2]/tmp/wanix9p.err)\n" +
+			"\t\techo 'wanix: virtio-9p mount failed; see /tmp/wanix9p.err' >/dev/cons\n" +
+			"if(test -d /n/host){\n" +
+			"\twanixmark host9p-mounted\n" +
+			"\tif(! test -d /n/host/boot)\n" +
+			"\t\tmkdir /n/host/boot\n" +
+			"\tcat /tmp/wanixboot.log >>/n/host/boot/guest.log\n" +
+			"}\n"
 		if len(termrc.Data) > 0 && termrc.Data[len(termrc.Data)-1] != '\n' {
 			termrc.Data = append(termrc.Data, '\n')
 		}
 		termrc.Data = append(termrc.Data, []byte(block)...)
 	}
 	const hookMarker = "# halatha optional local boot hook"
-	if !bytes.Contains(termrc.Data, []byte(hookMarker)) {
-		block := "\n" + hookMarker + "\n" +
-			"if(test -x /rc/bin/halatha.local)\n" +
-			"\t/rc/bin/halatha.local &\n"
+	hookBody := "if(test -r /n/host/boot/halatha.local)\n" +
+		"\trc /n/host/boot/halatha.local &\n" +
+		"if not if(test -x /rc/bin/halatha.local)\n" +
+		"\t/rc/bin/halatha.local &\n"
+	// An older image may already carry the marker with the previous,
+	// image-only hook. Presence of the marker alone is not enough: replace a
+	// stale block so rebuilding an already-patched image upgrades it to the
+	// host-served form instead of silently keeping the old one.
+	const staleHook = "if(test -x /rc/bin/halatha.local)\n\t/rc/bin/halatha.local &\n"
+	switch {
+	case bytes.Contains(termrc.Data, []byte(hookBody)):
+		// already current
+	case bytes.Contains(termrc.Data, []byte(hookMarker)):
+		termrc.Data = bytes.Replace(termrc.Data,
+			[]byte(hookMarker+"\n"+staleHook),
+			[]byte(hookMarker+"\n"+hookBody), 1)
+	default:
+		block := "\n" + hookMarker + "\n" + hookBody
 		if len(termrc.Data) > 0 && termrc.Data[len(termrc.Data)-1] != '\n' {
 			termrc.Data = append(termrc.Data, '\n')
 		}
@@ -1169,10 +1224,62 @@ func patchVirtio9pEntries(entries *[]archiveEntry) error {
 // Idempotent: prior installs are overwritten in place. The rc script lives in
 // a real file (not a Go raw-string const) so it can use rc backtick command
 // substitution to read the peers file.
+// installHalathaBind installs /rc/bin/halatha-bind and sources it from the
+// user profile ahead of `exec rio`.
+//
+// The bind CANNOT be done from halatha.local. termrc starts that hook in the
+// background and then the profile runs `exec rio`; rio does
+// rfork(RFNAMEG) at startup (rio.c:290) and again for every window
+// (wind.c:1355), so it snapshots the namespace at fork time. A bind that
+// lands after the fork stays in the boot namespace: it succeeds, it logs
+// success, and /bin is still empty in every rio window. Sourcing the helper
+// from the profile puts the bind in the namespace rio inherits.
+func installHalathaBind(entries *[]archiveEntry, srcdir string) error {
+	now := uint32(time.Now().Unix())
+
+	// The guest self-check reports whether the bind actually landed in a
+	// namespace rio inherits -- invisible from the host, so the guest has
+	// to say so itself.
+	watchrc := filepath.Join(srcdir, "halatha-watch.rc")
+	if _, err := os.Stat(watchrc); err == nil {
+		if err := addFile(entries, watchrc, "/rc/bin/halatha-watch", 0775, true, now); err != nil {
+			return fmt.Errorf("install halatha-watch: %w", err)
+		}
+	}
+
+	bindrc := filepath.Join(srcdir, "halatha-bind.rc")
+	if _, err := os.Stat(bindrc); err != nil {
+		return nil // nothing to install
+	}
+	if err := addFile(entries, bindrc, "/rc/bin/halatha-bind", 0775, true, now); err != nil {
+		return fmt.Errorf("install halatha-bind: %w", err)
+	}
+
+	prof := findEntry(*entries, "/usr/glenda/lib/profile")
+	if prof == nil {
+		fmt.Fprintln(os.Stderr, "mk9legacyimg: no /usr/glenda/lib/profile; skipping bind hook")
+		return nil
+	}
+	const marker = "# halatha: union the verified host bin tree"
+	if bytes.Contains(prof.Data, []byte(marker)) {
+		return nil
+	}
+	// Insert immediately before `exec rio`, so the bind is in place when rio
+	// forks its namespace.
+	const execRio = "\texec rio -i riostart\n"
+	if !bytes.Contains(prof.Data, []byte(execRio)) {
+		fmt.Fprintln(os.Stderr, "mk9legacyimg: profile has no `exec rio -i riostart`; skipping bind hook")
+		return nil
+	}
+	hook := marker + "\n\tif(test -x /rc/bin/halatha-bind)\n\t\t. /rc/bin/halatha-bind\n" + execRio
+	prof.Data = bytes.Replace(prof.Data, []byte(execRio), []byte("\t"+hook), 1)
+	return nil
+}
+
 func installHalathaLocal(entries *[]archiveEntry, srcdir string) error {
 	now := uint32(time.Now().Unix())
 	rc := filepath.Join(srcdir, "halatha.local")
-	if err := addFile(entries, rc, "/rc/bin/halatha.local", 0, false, now); err != nil {
+	if err := addFile(entries, rc, "/rc/bin/halatha.local", 0775, true, now); err != nil {
 		return fmt.Errorf("install halatha.local: %w", err)
 	}
 	// ygg-up.rc is the on-demand twin of halatha.local: same Yggdrasil start
@@ -1181,8 +1288,14 @@ func installHalathaLocal(entries *[]archiveEntry, srcdir string) error {
 	// /rc/bin name is how you run it without retyping it each boot.
 	yggUp := filepath.Join(srcdir, "ygg-up.rc")
 	if _, err := os.Stat(yggUp); err == nil {
-		if err := addFile(entries, yggUp, "/rc/bin/ygg-up", 0, false, now); err != nil {
+		if err := addFile(entries, yggUp, "/rc/bin/ygg-up", 0775, true, now); err != nil {
 			return fmt.Errorf("install ygg-up: %w", err)
+		}
+	}
+	yggPeers := filepath.Join(srcdir, "ygg-peers.rc")
+	if _, err := os.Stat(yggPeers); err == nil {
+		if err := addFile(entries, yggPeers, "/rc/bin/ygg-peers", 0775, true, now); err != nil {
+			return fmt.Errorf("install ygg-peers: %w", err)
 		}
 	}
 	peers := filepath.Join(srcdir, "yggdrasil.peers")
@@ -1224,7 +1337,10 @@ func installO9c(entries *[]archiveEntry, o9dir string) error {
 	// Required: the compiler, the runtime archive, the header. A missing one is
 	// fatal -- the toolchain is unusable without it. o9c is an exec binary
 	// (0775); libo9.a and o9.h are data (0664).
-	requires := []struct{ src, dst string; mode uint32 }{
+	requires := []struct {
+		src, dst string
+		mode     uint32
+	}{
 		{filepath.Join(pre, "bin", "o9c"), "/386/bin/o9c", 0775},
 		{filepath.Join(pre, "lib", "libo9.a"), "/386/lib/libo9.a", 0664},
 		{filepath.Join(pre, "include", "o9.h"), "/sys/include/o9.h", 0664},
@@ -1505,9 +1621,21 @@ if(! ps|grep -s timesync)
 `
 
 func patchTermRCContents(data []byte) []byte {
+	if !bytes.Contains(data, []byte("# wanix boot telemetry")) {
+		data = bytes.Replace(data,
+			[]byte("#!/bin/rc\n"),
+			[]byte("#!/bin/rc\n"+
+				"# wanix boot telemetry\n"+
+				"fn wanixmark {\n"+
+				"\techo `{date -n} $* >>/tmp/wanixboot.log\n"+
+				"}\n"+
+				"wanixmark termrc-start\n"),
+			1,
+		)
+	}
 	data = bytes.Replace(data,
 		[]byte("if(! test -e /net/ipifc/0/ctl)\n\tip/ipconfig\n"),
-		[]byte("# wanix: browser-backed networking starts in the background when a NIC is present.\nif(test -x /rc/bin/wanixnet)\n\t/rc/bin/wanixnet &\n"),
+		[]byte("wanixmark before-wanixnet\n# wanix: browser-backed networking starts in the background when a NIC is present.\nif(test -x /rc/bin/wanixnet)\n\t/rc/bin/wanixnet &\nwanixmark after-wanixnet\n"),
 		1,
 	)
 	data = bytes.Replace(data,
@@ -1517,7 +1645,7 @@ func patchTermRCContents(data []byte) []byte {
 	)
 	data = bytes.Replace(data,
 		[]byte("\nusbstart\n"),
-		[]byte("\n# wanix: v86 boots do not need USB startup unless explicitly requested.\nif(~ $wanixusb 1)\n\tusbstart\n"),
+		[]byte("\nwanixmark before-usbstart\n# wanix: v86 boots do not need USB startup unless explicitly requested.\nif(~ $wanixusb 1)\n\tusbstart\nwanixmark after-usbstart\n"),
 		1,
 	)
 	return data

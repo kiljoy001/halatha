@@ -69,7 +69,9 @@ func (fsys MapFS) StatContext(ctx context.Context, name string) (fs.FileInfo, er
 		if subfs, found := fsys["."]; found {
 			return fs.StatContext(ctx, subfs, ".")
 		} else {
-			return Entry(name, fs.ModeDir|0555), nil
+			n := Entry(name, fs.ModeDir|0555)
+			n.id = 0
+			return n, nil
 		}
 	}
 
@@ -182,7 +184,9 @@ func (fsys MapFS) openSynthetic(ctx context.Context, name string) (fs.File, erro
 		delete(need, fi.path)
 	}
 	for name := range need {
-		list = append(list, RawNode(name, fs.FileMode(fs.ModeDir|0555)))
+		synthetic := RawNode(name, fs.FileMode(fs.ModeDir|0555))
+		synthetic.id = 0
+		list = append(list, synthetic)
 	}
 	slices.SortFunc(list, func(a, b *Node) int {
 		return strings.Compare(a.path, b.path)
@@ -196,9 +200,11 @@ func (fsys MapFS) openSynthetic(ctx context.Context, name string) (fs.File, erro
 				n.path = name
 			} else {
 				n = RawNode(name, fs.ModeDir|0555)
+				n.id = 0
 			}
 		} else {
 			n = RawNode(name, fs.ModeDir|0555)
+			n.id = 0
 		}
 	} else {
 		n.path = name

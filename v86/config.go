@@ -163,7 +163,9 @@ func parseFlags(args []string) (map[string]any, error) {
 				"rw",
 				"root=host9p",
 				"rootfstype=9p",
-				"rootflags=trans=virtio,version=9p2000.L,aname=,cache=none,msize=131072",
+				// wanix serves 9P2000 only; Linux v9fs mounts it without
+				// the .L extensions (no symlinks or numeric owners).
+				"rootflags=trans=virtio,version=9p2000,aname=,cache=none,msize=131072",
 			}
 			cmdline += " " + strings.Join(fsargs, " ")
 			// up to caller to set up filesystem (handle9p)
@@ -243,26 +245,25 @@ func parseMemorySize(sizeStr string) (int, error) {
 }
 
 // parseBootOrder converts a QEMU-style boot string (a=floppy, c=hard disk,
-// d=cdrom, n=network) into v86's boot_order nibble encoding: three hex digits
-// each selecting a device (1=floppy, 2=hard disk, 3=cdrom, 4=network), most
-// significant first. v86 defaults like 0x312 (786) and 0x321 (801) use this.
+// d=cdrom, n=network) into v86's boot_order nibble encoding. v86 stores the
+// first boot device in the low nibble; its built-in defaults are hda=0x312 and
+// fda=0x321, so cdrom-first is 0x123.
 func parseBootOrder(bootStr string) int {
-	bootMap := map[byte]int{
-		'a': 0x1, // Floppy
-		'b': 0x1, // Floppy
-		'c': 0x2, // Hard disk
-		'd': 0x3, // CD-ROM
-		'n': 0x4, // Network
-	}
 	if bootStr == "" {
-		return 0x123 // floppy, hard disk, cdrom
-	}
-	first, ok := bootMap[bootStr[0]]
-	if !ok {
 		return 0x123
 	}
-	// Chosen device first, then fall back to hard disk then cdrom.
-	return first<<8 | 0x23
+	switch bootStr[0] {
+	case 'a', 'b':
+		return 0x321
+	case 'c':
+		return 0x312
+	case 'd':
+		return 0x123
+	case 'n':
+		return 0x124
+	default:
+		return 0x123
+	}
 }
 
 // parseVirtfs parses VirtFS configuration

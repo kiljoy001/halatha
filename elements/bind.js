@@ -1,3 +1,4 @@
+import { authenticateMount } from "./mount-auth.js";
 
 export class BindElement extends HTMLElement {
     constructor() {
@@ -12,6 +13,10 @@ export class BindElement extends HTMLElement {
         this.perm = this.getAttribute('perm') || "0644";
         this.union = this.getAttribute('union') || "after";
         this.type = this.getAttribute('type') || "ns";
+        this.transport = this.getAttribute('transport') || "";
+        this.protocol = this.getAttribute('protocol') || "9P2000";
+        this.user = this.getAttribute('user') || "none";
+        this.aname = this.getAttribute('aname') || "";
         this.opts = Object.fromEntries(
             Object.entries(this.dataset).map(([k, v]) => [
                 k.startsWith("opt-") ? k.slice(4) : k,
@@ -56,11 +61,27 @@ export class BindElement extends HTMLElement {
             }
             break;
         case "import":
-            if (this.src.startsWith("ws://") || this.src.startsWith("wss://")) {
+            if (this.transport === "websocket" || this.src.startsWith("ws://") || this.src.startsWith("wss://")) {
                 this.import = new Promise((resolve, reject) => {
-                    const ws = new WebSocket(this.src);
-                    ws.onopen = () => {
-                        resolve(websocketToMessagePort(ws));
+                    const ws = new WebSocket(resolveWebSocketURL(this.src));
+                     ws.binaryType = "arraybuffer";
+                    ws.onopen = async () => {
+                        try {
+                            const auth = this.getAttribute("auth");
+                            if (auth && auth !== "factotum") throw new Error("Unknown import authentication");
+                            if (auth === "factotum") {
+                                await authenticateMount(ws, this.src, {
+                                    exportName: this.getAttribute("export") || this.dst,
+                                    pairingToken: this.mountPairingToken,
+                                    user: this.user,
+                                    aname: this.aname,
+                                });
+                            }
+                            resolve(websocketToMessagePort(ws));
+                        } catch (error) { ws.close(); reject(error); }
+                    };
+                    ws.onerror = () => {
+                        reject(new Error(`WebSocket import failed: ${this.src}`));
                     };
                 });
                 break;
@@ -96,6 +117,16 @@ export class BindElement extends HTMLElement {
 
 if (typeof window !== "undefined") {
     customElements.define("wanix-bind", BindElement);
+}
+
+function resolveWebSocketURL(src) {
+    const url = new URL(src, document.baseURI);
+    if (url.protocol === "http:") {
+        url.protocol = "ws:";
+    } else if (url.protocol === "https:") {
+        url.protocol = "wss:";
+    }
+    return url.href;
 }
 
 
@@ -157,20 +188,17 @@ function websocketToMessagePort(ws) {
     // Create a MessageChannel and grab one port to return
     const { port1, port2 } = new MessageChannel();
 
-    // Forward messages from WebSocket to port1
+    // ArrayBuffer delivery preserves stream order without asynchronous Blob
+    // conversions. The receiver concatenates chunks into the 9P byte stream.
     ws.onmessage = (event) => {
-        if (event.data instanceof Blob) {
-            event.data.arrayBuffer().then(arr => {
-                const buf = new Uint8Array(arr);
-                // Only ArrayBuffer is transferable, not TypedArray views like Uint8Array
-                port1.postMessage(buf, [buf.buffer]);
-            });
-            return;
-        } else {
-            console.warn("Unsupported data type", event.data);
+        if (event.data instanceof ArrayBuffer) {
+            port1.postMessage(new Uint8Array(event.data), [event.data]);
         }
     };
-    ws.onclose = () => port1.close();
+    ws.onclose = () => {
+        port1.postMessage({ closed: true });
+        port1.close();
+    };
 
     // Forward postMessage on port1 to WebSocket send
     port1.onmessage = (event) => {

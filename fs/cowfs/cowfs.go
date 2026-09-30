@@ -274,6 +274,12 @@ func (u *FS) copyIfNeeded(name string) (string, error) {
 		return "", err
 	}
 	if copyNeeded {
+		// Create parent directory scaffolding in overlay so nested files can be copied
+		if dir := path.Dir(name); dir != "." {
+			if err := fs.MkdirAll(u.Overlay, dir, 0o755); err != nil {
+				return "", err
+			}
+		}
 		if err := fs.CopyFS(u.Base, name, u.Overlay, name); err != nil {
 			return "", err
 		}
@@ -601,10 +607,14 @@ func (u *FS) Remove(name string) error {
 		}
 	}
 
-	// 9. tombstone it to record it was deleted
-	// log.Println("tombstoning", target)
-	if err := u.tombstone(target); err != nil {
-		return err
+	// 9. tombstone it to record it was deleted, but only if it exists in base.
+	// Overlay-only files leave no base entry to mask, so tombstoning them would
+	// incorrectly hide a future base file at the same path.
+	if existsInBase {
+		// log.Println("tombstoning", target)
+		if err := u.tombstone(target); err != nil {
+			return err
+		}
 	}
 
 	// 10. Clean up any renames that pointed to this file

@@ -1,0 +1,35 @@
+diff --git a/sys/src/libsec/port/mkfile b/sys/src/libsec/port/mkfile
+index ce2b1e475..9fca30cb2 100644
+--- a/sys/src/libsec/port/mkfile
++++ b/sys/src/libsec/port/mkfile
+@@ -41,11 +41,26 @@ UPDATE=mkfile\
+ 
+ </sys/src/cmd/mksyslib
+ 
+-# generate the elliptic curve parameter tables from their mp source
++# generate the elliptic curve parameter tables from their mp source.
++# mpc is a build-time tool that minimal images do not carry; when it is
++# absent the pre-generated $target (jacobian.c, secp256r1.c, secp384r1.c,
++# checked into the tree) is used as-is.  The trailing if-not guarantees a
++# zero exit so mk's :D: rule does not delete the committed file.
+ %.c:D:	%.mp
+-	echo '#include "os.h"' > $target
+-	echo '#include <mp.h>' >> $target
+-	mpc $prereq >> $target
++	if(test -x /386/bin/mpc){
++		echo '#include "os.h"' > $target
++		echo '#include <mp.h>' >> $target
++		mpc $prereq >> $target
++	}
++	if not if(test -x /bin/mpc){
++		echo '#include "os.h"' > $target
++		echo '#include <mp.h>' >> $target
++		mpc $prereq >> $target
++	}
++	if not {
++		# mpc absent: keep the committed $target unchanged
++		echo -n > /dev/null
++	}
+ 
+ $O.rsatest: rsatest.$O
+ 	$LD -o $target $prereq

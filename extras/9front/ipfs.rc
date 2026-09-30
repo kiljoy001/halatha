@@ -1,0 +1,180 @@
+#!/bin/rc
+# ipfs — Plan 9 client for Halatha's 9P-to-IPFS gateway
+# Usage:
+#   ipfs cat <CID>            — dump content to stdout
+#   ipfs get <CID> [dst]      — download CID to file
+#   ipfs put <file>           — stage file and publish/pin to IPFS (prints CID)
+#   ipfs plumb <CID>          — plumb CID (opens in Acme / page)
+#   ipfs status               — show gateway status
+
+sub=$1
+if(~ $#sub 0){
+	echo 'usage: ipfs cat|get|put|plumb|status [args]' >[1=2]
+	exit usage
+}
+shift
+
+# NOTE: the poll loops below use $st, not $status. In rc, `status` is
+# the builtin exit-status variable and the ~ operator WRITES to it
+# (rc/exec.c Xmatch: setstatus("no match")), so `if(~ $status ...)`
+# clobbers the very value it is testing -- errors came out as the
+# literal text "no match" instead of the real status.
+root=/n/host/ipfs
+if(! test -d $root){
+	echo 'ipfs: /n/host/ipfs not mounted' >[1=2]
+	exit nomount
+}
+
+switch($sub){
+case cat
+	cid=$1
+	if(~ $#cid 0){
+		echo 'usage: ipfs cat <cid>' >[1=2]
+		exit usage
+	}
+	cid=`{echo $cid | sed 's!^(ipfs://|/ipfs/)!!'}
+	echo 'get '$cid > $root/ctl
+	st=''
+	done=()
+	for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
+		if(~ $#done 0){
+			st=`{cat $root/status}
+			if(~ $st done* error*)
+				done=1
+			if(~ $#done 0)
+				sleep 1
+		}
+	}
+	if(~ $st done*){
+		if(test -f $root/out/$cid)
+			cat $root/out/$cid
+		if not if(test -f $root/data)
+			cat $root/data
+	}
+	if not {
+		echo 'ipfs cat error:' $st >[1=2]
+		exit error
+	}
+
+case get
+	cid=$1
+	dst=$2
+	if(~ $#cid 0){
+		echo 'usage: ipfs get <cid> [dst]' >[1=2]
+		exit usage
+	}
+	cid=`{echo $cid | sed 's!^(ipfs://|/ipfs/)!!'}
+	if(~ $#dst 0)
+		dst=$cid
+	echo 'get '$cid > $root/ctl
+	st=''
+	done=()
+	for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
+		if(~ $#done 0){
+			st=`{cat $root/status}
+			if(~ $st done* error*)
+				done=1
+			if(~ $#done 0)
+				sleep 1
+		}
+	}
+	if(~ $st done*){
+		if(test -f $root/out/$cid)
+			cp $root/out/$cid $dst
+		if not if(test -f $root/data)
+			cp $root/data $dst
+		echo 'ipfs: saved' $cid 'to' $dst
+	}
+	if not {
+		echo 'ipfs get error:' $st >[1=2]
+		exit error
+	}
+
+case put
+	src=$1
+	if(~ $#src 0 || ! test -f $src){
+		echo 'usage: ipfs put <file>' >[1=2]
+		exit usage
+	}
+	base=`{echo $src | sed 's!.*/!!'}
+	cp $src $root/in
+	echo 'put '$base > $root/ctl
+	st=''
+	done=()
+	for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
+		if(~ $#done 0){
+			st=`{cat $root/status}
+			if(~ $st pinned* error*)
+				done=1
+			if(~ $#done 0)
+				sleep 1
+		}
+	}
+	if(~ $st pinned*){
+		cid=`{cat $root/cid}
+		echo $cid
+	}
+	if not {
+		echo 'ipfs put error:' $st >[1=2]
+		exit error
+	}
+
+case plumb
+	cid=$1
+	if(~ $#cid 0){
+		echo 'usage: ipfs plumb <cid>' >[1=2]
+		exit usage
+	}
+	cid=`{echo $cid | sed 's!^(ipfs://|/ipfs/)!!'}
+	echo 'get '$cid > $root/ctl
+	st=''
+	done=()
+	for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
+		if(~ $#done 0){
+			st=`{cat $root/status}
+			if(~ $st done* error*)
+				done=1
+			if(~ $#done 0)
+				sleep 1
+		}
+	}
+	if(~ $st done*){
+		target=$root/out/$cid
+		if(! test -f $target)
+			target=$root/data
+		if(test -x /bin/page && {file $target | grep -i -s 'image|bitmap|png|jpeg|gif|postscript|pdf'}){
+			page $target &
+		}
+		if not if(test -e /mnt/plumb/send){
+			echo -n $target | plumb -i -d edit -a 'action=show'
+		}
+		if not {
+			echo '=== '$cid' ==='
+			cat $target
+		}
+	}
+	if not {
+		echo 'ipfs plumb error:' $st >[1=2]
+		exit error
+	}
+
+case plumb-install
+	if(test -e /mnt/plumb/rules){
+		{
+			echo 'type is text'
+			echo 'data matches ''(ipfs://|/ipfs/)?(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z0-9]{55})(/.*)?'''
+			echo 'plumb start ipfs plumb $2$3'
+		} >>/mnt/plumb/rules
+		echo 'ipfs: added plumbing rule to /mnt/plumb/rules'
+	}
+	if not {
+		echo 'ipfs: /mnt/plumb/rules not found' >[1=2]
+	}
+
+case status
+	cat $root/status
+
+case *
+	echo 'ipfs: unknown command' $sub >[1=2]
+	exit usage
+}

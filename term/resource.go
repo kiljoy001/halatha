@@ -1,6 +1,9 @@
 package term
 
 import (
+	"io"
+	"sync"
+
 	"tractor.dev/wanix/fs/fskit"
 	"tractor.dev/wanix/fs/pipe"
 	"tractor.dev/wanix/fs/signal"
@@ -29,6 +32,19 @@ func (r *Resource) shutdown() {
 type programFile struct {
 	*pipe.PortFile
 	prev byte // last input byte seen, for cross-call lookbehind
+
+	onEOF   func() // called once when the program end reaches EOF
+	eofOnce sync.Once
+}
+
+// Read proxies the pipe read, tearing down the owning resource the first
+// time the program end reports EOF.
+func (c *programFile) Read(p []byte) (int, error) {
+	n, err := c.PortFile.Read(p)
+	if err == io.EOF && c.onEOF != nil {
+		c.eofOnce.Do(c.onEOF)
+	}
+	return n, err
 }
 
 func (c *programFile) Write(p []byte) (int, error) {
