@@ -128,6 +128,41 @@ func TestHalathaBindRunsBeforeRio(t *testing.T) {
 	mustContain(t, "halatha-bind.rc", body, `$"hstatus`)
 }
 
+// TestTermrcMountsHostOverVirtio9p pins how the guest reaches the host: the
+// kernel's #9 device (devvirtio9p) carries 9P2000 over virtio. The serial
+// bridge is gone -- it was far slower -- so nothing may fall back to it.
+func TestTermrcMountsHostOverVirtio9p(t *testing.T) {
+	body := read(t, "termrc.local")
+	mustContain(t, "termrc.local", body, "mount -c '#9/0' /n/host")
+	// A successful mount leaves a marker the host can read back, so the
+	// browser can tell "the guest wrote through #9" from "nothing happened".
+	mustContain(t, "termrc.local", body, ">/n/host/boot/host9p")
+	for _, gone := range []string{"serial9p", "/dev/eia", "/srv/host"} {
+		mustNotContain(t, "termrc.local", body, gone)
+	}
+	// The boot hook still runs, after the mount it depends on.
+	mount := strings.Index(body, "mount -c '#9/0' /n/host")
+	hook := strings.Index(body, "/rc/bin/halatha.local &")
+	if hook < 0 || hook < mount {
+		t.Errorf("termrc.local must start halatha.local after mounting /n/host")
+	}
+}
+
+// TestKernelBuildScriptParses checks kernel/build.rc with plan9port rc
+// without running it: the body is wrapped in a function definition, which
+// rc must parse but never executes (the script runs mk and cd on /sys).
+func TestKernelBuildScriptParses(t *testing.T) {
+	rc := plan9Rc(t)
+	for _, script := range []string{"kernel/build.rc", "pipeline/install-image.rc"} {
+		body := read(t, script)
+		body = strings.TrimPrefix(body, "#!/bin/rc\n")
+		out, err := exec.Command(rc, "-c", "fn parsecheck {\n"+body+"\n}\necho PARSED").CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "PARSED") {
+			t.Errorf("%s does not parse: %v\n%s", script, err, out)
+		}
+	}
+}
+
 // TestRuntimeScriptsStaySmall guards the rc footguns that actually break
 // these boot scripts: excessive size, bare flag assignments, and unquoted
 // `=` (which rc treats as a delimiter, not an argument character).

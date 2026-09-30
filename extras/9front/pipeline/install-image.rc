@@ -1,0 +1,12 @@
+#!/bin/rc
+# Install halatha's guest files into this 9front system. Run once, inside
+# the image being assembled, with the files staged in /n/9fat/halatha.
+# Prints INSTALL-OK or INSTALL-FAIL for whoever drives the console.
+rfork e
+src=/n/9fat/halatha
+if(cp $src/termrc.local /rc/bin/termrc.local){
+	echo INSTALL-OK
+}
+if not {
+	echo INSTALL-FAIL
+}

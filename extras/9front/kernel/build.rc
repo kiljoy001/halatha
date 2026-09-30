@@ -1,0 +1,19 @@
+#!/bin/rc
+# Build the halatha 9front kernel (pc plus devvirtio9p) inside 9front.
+# Expects this directory at /n/9fat/halatha; leaves the kernel at
+# /n/9fat/9pchalatha, the log at /n/9fat/halatha/build.log, and prints
+# BUILD-OK or BUILD-FAIL on the console for whoever drives the build.
+rfork e
+src=/n/9fat/halatha
+cp $src/devvirtio9p.c /sys/src/9/pc/devvirtio9p.c
+cp $src/pchalatha /sys/src/9/pc/pchalatha
+cd /sys/src/9/pc
+if(mk 'CONF=pchalatha' >$src/build.log >[2=1] && cp 9pchalatha /n/9fat/9pchalatha){
+	echo OK >$src/STATUS
+	echo BUILD-OK
+}
+if not {
+	echo FAIL >$src/STATUS
+	tail -20 $src/build.log
+	echo BUILD-FAIL
+}
