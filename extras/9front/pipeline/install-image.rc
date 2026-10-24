@@ -4,9 +4,96 @@
 # Prints INSTALL-OK or INSTALL-FAIL for whoever drives the console.
 rfork e
 src=/n/9fat/halatha
-if(cp $src/termrc.local /rc/bin/termrc.local){
+ok=1
+fn installfile {
+	if(test -e $2)
+		rm -f $2
+	cp $1 $2
+}
+if(! installfile $src/termrc.local /rc/bin/termrc.local)
+	ok=()
+if(! installfile $src/halatha.local /rc/bin/halatha.local)
+	ok=()
+if(! installfile $src/desktop.rc /rc/bin/halatha-desktop)
+	ok=()
+if(! installfile $src/o9build.rc /rc/bin/o9build)
+	ok=()
+if(! installfile $src/bind.rc /rc/bin/halatha-bind)
+	ok=()
+if(! installfile $src/watch.rc /rc/bin/halatha-watch)
+	ok=()
+if(! installfile $src/usbboot.rc /rc/bin/halatha-usbboot)
+	ok=()
+if(! installfile $src/halctl.386 /386/bin/halctl)
+	ok=()
+if(test -f $src/9pmount.386){
+	if(! installfile $src/9pmount.386 /386/bin/9pmount)
+		ok=()
+	if(~ $#ok 1)
+		chmod +x /386/bin/9pmount
+}
+if(test -f $src/cs.386){
+	if(! installfile $src/cs.386 /386/bin/ndb/cs)
+		ok=()
+	if(~ $#ok 1)
+		chmod +x /386/bin/ndb/cs
+}
+chmod +x /rc/bin/halatha.local /rc/bin/halatha-desktop /rc/bin/halatha-bind /rc/bin/halatha-watch /rc/bin/halatha-usbboot /rc/bin/o9build
+chmod +x /386/bin/halctl
+
+# The base image can also carry an older appended boot hook with an invalid
+# "if not if" clause. termrc.local owns that hook now. Defer stock nusbrc
+# until after the host mount so usbd inherits /n/host.
+if(! sed '/^nusbrc$/d; /^# halatha optional local boot hook$/,$d' /rc/bin/termrc >/tmp/halatha.termrc)
+	ok=()
+if(~ $#ok 1){
+	if(! installfile /tmp/halatha.termrc /rc/bin/termrc)
+		ok=()
+}
+
+# Source the bind in the profile namespace before Rio forks its own. The
+# hook is idempotent so rebuilding an image does not stack extra binds.
+profile=/usr/glenda/lib/profile
+if(! test -f $profile)
+	ok=()
+if(~ $#ok 1){
+	if(! grep -s 'halatha-bind' $profile){
+		if(! cp $profile /tmp/halatha.profile)
+			ok=()
+		if(~ $#ok 1){
+			{
+				echo '# halatha: bind verified host tools before Rio starts'
+				echo 'if(test -x /rc/bin/halatha-bind)'
+				echo '	. /rc/bin/halatha-bind'
+				cat /tmp/halatha.profile
+			} >/tmp/halatha.newprofile
+			if(! installfile /tmp/halatha.newprofile $profile)
+				ok=()
+		}
+	}
+}
+
+# Rio runs glenda's riostart after its window service is ready. Use the
+# browser's current desktop script, with the installed copy as a fallback.
+riostart=/usr/glenda/bin/rc/riostart
+if(~ $#ok 1 && test -f $riostart){
+	if(! grep -s 'halatha desktop startup' $riostart){
+		{
+			cat $riostart
+			echo '# halatha desktop startup'
+			echo 'if(test -r /n/host/boot/desktop.rc)'
+			echo 'rc /n/host/boot/desktop.rc'
+			echo 'if not'
+			echo 'rc /rc/bin/halatha-desktop'
+		} >/tmp/halatha.newriostart
+		if(! installfile /tmp/halatha.newriostart $riostart)
+			ok=()
+		if(~ $#ok 1)
+			chmod +x $riostart
+	}
+}
+
+if(~ $#ok 1)
 	echo INSTALL-OK
-}
-if not {
+if not
 	echo INSTALL-FAIL
-}

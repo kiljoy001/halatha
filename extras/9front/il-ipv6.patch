@@ -1,0 +1,1093 @@
+diff --git a/sys/src/9/ip/il.c b/sys/src/9/ip/il.c
+index d6db1d44b..9384eb59a 100644
+--- a/sys/src/9/ip/il.c
++++ b/sys/src/9/ip/il.c
+@@ -6,6 +6,7 @@
+ #include	"../port/error.h"
+ 
+ #include	"ip.h"
++#include	"ipv6.h"
+ 
+ enum				/* Connection state */
+ {
+@@ -13,6 +14,7 @@ enum				/* Connection state */
+ 	Ilsyncer,
+ 	Ilsyncee,
+ 	Ilestablished,
++	Ildraining,
+ 	Illistening,
+ 	Ilclosing,
+ 	Ilopening,		/* only for file server */
+@@ -24,6 +26,7 @@ char	*ilstates[] =
+ 	"Syncer",
+ 	"Syncee",
+ 	"Established",
++	"Draining",
+ 	"Listen",
+ 	"Closing",
+ 	"Opening",		/* only for file server */
+@@ -62,6 +65,8 @@ enum
+ 
+ 	MaxRexmit 	= 16,		/* max retransmissions before hangup */
+ 	Defaultwin	= 20,
++	Initialwin	= 2,
++	Maxflight	= 32*1024,	/* leave room in the receiver's 64K queue */
+ 
+ 	LogAGain	= 3,
+ 	AGain		= 1<<LogAGain,
+@@ -72,6 +77,8 @@ enum
+ 	DefRtt		= 50,		/* cross country on a great day */
+ 
+ 	Maxrq		= 64*1024,
++	Ilflow		= 0x80,		/* SYNC capability; other packet types retain ilspec */
++	Ilcreditlen	= 8,		/* cumulative bytes removed from receive queue */
+ };
+ 
+ enum
+@@ -88,6 +95,18 @@ struct Ilcb			/* Control block */
+ 	Block	*unacked;
+ 	Block	*unackedtail;
+ 	ulong	unackedbytes;
++	uvlong	txbytes;	/* unique payload bytes sent */
++	uvlong	rxqueued;	/* payload bytes delivered to receive queue */
++	uvlong	peerread;	/* peer's cumulative bytes read */
++	uvlong	creditread;	/* last read count advertised */
++	int	flowpeer;	/* peer advertised Ilflow on SYNC */
++	Block	*pending;	/* next message held while the send window is full */
++	int	flight;		/* unacknowledged messages */
++	int	cwind;		/* congestion window, in messages */
++	int	ssthresh;
++	int	acks;		/* acknowledgements toward the next window increase */
++	int	inrecovery;
++	ulong	recovery;	/* highest message sent when loss was confirmed */
+ 	QLock	outo;		/* Out of order packet queue */
+ 	Block	*outoforder;
+ 	ulong	next;		/* Id of next to send */
+@@ -124,8 +143,7 @@ struct Ilcb			/* Control block */
+ 
+ enum
+ {
+-	IL_IPSIZE 	= 20,
+-	IL_HDRSIZE	= 18,	
++	IL_HDRSIZE	= 18,
+ 	IL_LISTEN	= 0,
+ 	IL_CONNECT	= 1,
+ 	IP_ILPROTO	= 40,
+@@ -134,16 +152,6 @@ enum
+ typedef struct Ilhdr Ilhdr;
+ struct Ilhdr
+ {
+-	uchar	vihl;		/* Version and header length */
+-	uchar	tos;		/* Type of service */
+-	uchar	length[2];	/* packet length */
+-	uchar	id[2];		/* Identification */
+-	uchar	frag[2];	/* Fragment information */
+-	uchar	ttl;		/* Time to live */
+-	uchar	proto;		/* Protocol */
+-	uchar	cksum[2];	/* Header checksum */
+-	uchar	src[4];		/* Ip source */
+-	uchar	dst[4];		/* Ip destination */
+ 	uchar	ilsum[2];	/* Checksum including header */
+ 	uchar	illen[2];	/* Packet length */
+ 	uchar	iltype;		/* Packet type */
+@@ -154,6 +162,51 @@ struct Ilhdr
+ 	uchar	ilack[4];	/* Acked sequence */
+ };
+ 
++static int
++iliphdrlen(int version)
++{
++	if(version == V4)
++		return IP4HDR;
++	return IP6HDR;
++}
++
++static Ilhdr*
++ilhdr(Block *bp, int version)
++{
++	return (Ilhdr*)(bp->rp + iliphdrlen(version));
++}
++
++static void
++ilsetip(Block *bp, int version, uchar *src, uchar *dst)
++{
++	Ip4hdr *h4;
++	Ip6hdr *h6;
++
++	if(version == V4){
++		h4 = (Ip4hdr*)bp->rp;
++		memset(h4, 0, IP4HDR);
++		h4->vihl = IP_VER4;
++		h4->proto = IP_ILPROTO;
++		v6tov4(h4->src, src);
++		v6tov4(h4->dst, dst);
++	} else {
++		h6 = (Ip6hdr*)bp->rp;
++		memset(h6, 0, IP6HDR);
++		h6->vcf[0] = IP_VER6;
++		h6->proto = IP_ILPROTO;
++		ipmove(h6->src, src);
++		ipmove(h6->dst, dst);
++	}
++}
++
++static int
++iloutput(Fs *f, Block *bp, int version, int ttl, int tos, Routehint *rh)
++{
++	if(version == V4)
++		return ipoput4(f, bp, nil, ttl, tos, rh);
++	return ipoput6(f, bp, nil, ttl, tos, rh);
++}
++
+ enum
+ {
+ 	InMsgs,
+@@ -208,7 +261,8 @@ struct Ilpriv
+ 
+ 
+ void	ilrcvmsg(Conv*, Block*);
+-int	ilsendctl(Conv*, Ilhdr*, int, ulong, ulong, int);
++void	ilpump(Conv*);
++int	ilsendctl(Conv*, int, ulong, ulong, int);
+ void	ilackq(Ilcb*, Block*);
+ void	ilprocess(Conv*, Ilhdr*, Block*);
+ void	ilpullup(Conv*);
+@@ -225,7 +279,7 @@ void	iladvise(Proto*, Block*, Ipifc*, char*);
+ int	ilnextqt(Ilcb*);
+ void	ilcbinit(Ilcb*);
+ int	later(ulong, ulong, char*);
+-void	ilreject(Fs*, Ilhdr*);
++void	ilreject(Fs*, Block*);
+ void	illocalclose(Conv *c);
+ 	int 	ilcksum = 1;
+ static 	int 	initseq = 25001;
+@@ -251,8 +305,6 @@ ilconnect(Conv *c, char **argv, int argc)
+ 	e = Fsstdconnect(c, argv, argc);
+ 	if(e != nil)
+ 		return e;
+-	if(c->ipversion != V4)
+-		return "only IP version 4 supported";
+ 		
+ 	return ilstart(c, IL_CONNECT, fast);
+ }
+@@ -263,12 +315,14 @@ ilstate(Conv *c, char *state, int n)
+ 	Ilcb *ic;
+ 
+ 	ic = (Ilcb*)(c->ptcl);
+-	return snprint(state, n, "%s qin %d qout %d del %5.5d Br %5.5d md %5.5d una %5.5lud rex %5.5d rxq %5.5d max %5.5d\n",
++	return snprint(state, n, "%s qin %d qout %d del %5.5d Br %5.5d md %5.5d una %5.5lud rex %5.5d rxq %5.5d max %5.5d cwnd %d flight %d ssthresh %d flow %d sent %llud read %llud peerread %llud\n",
+ 		ilstates[ic->state],
+ 		c->rq ? qlen(c->rq) : 0,
+-		c->wq ? qlen(c->wq) : 0,
++		(c->wq ? qlen(c->wq) : 0) + (ic->pending ? blocklen(ic->pending) : 0),
+ 		ic->delay>>LogAGain, ic->rate>>LogAGain, ic->mdev>>LogDGain,
+-		ic->unackedbytes, ic->rxtot, ic->rxquery, ic->maxrtt);
++		ic->unackedbytes, ic->rxtot, ic->rxquery, ic->maxrtt,
++		ic->cwind, ic->flight, ic->ssthresh, ic->flowpeer,
++		ic->txbytes, ic->rxqueued - (c->rq ? qlen(c->rq) : 0), ic->peerread);
+ }
+ 
+ static int
+@@ -312,6 +366,22 @@ illocalclose(Conv *c)
+ 	ipmove(c->laddr, IPnoaddr);
+ }
+ 
++/* Finish a local close after every queued datagram has been acknowledged. */
++static void
++iltryclose(Conv *c)
++{
++	Ilcb *ic;
++
++	ic = (Ilcb*)c->ptcl;
++	if(ic->state != Ildraining || ic->flight != 0 || ic->pending != nil || qlen(c->wq) != 0)
++		return;
++	ic->state = Ilclosing;
++	qclose(c->wq);
++	ilsettimeout(ic);
++	ilsendctl(c, Ilclose, ic->next, ic->recvd, 0);
++	ilfreeq(ic);
++}
++
+ static void
+ ilclose(Conv *c)
+ {
+@@ -320,8 +390,15 @@ ilclose(Conv *c)
+ 	ic = (Ilcb*)c->ptcl;
+ 
+ 	qclose(c->rq);
+-	qclose(c->wq);
+ 	qclose(c->eq);
++	if(ic->state == Ilestablished){
++		qhangup(c->wq, nil);
++		ic->state = Ildraining;
++		ilpump(c);
++		iltryclose(c);
++		return;
++	}
++	qclose(c->wq);
+ 
+ 	switch(ic->state) {
+ 	case Ilclosing:
+@@ -332,7 +409,7 @@ ilclose(Conv *c)
+ 	case Ilestablished:
+ 		ic->state = Ilclosing;
+ 		ilsettimeout(ic);
+-		ilsendctl(c, nil, Ilclose, ic->next, ic->recvd, 0);
++		ilsendctl(c, Ilclose, ic->next, ic->recvd, 0);
+ 		break;
+ 	case Illistening:
+ 		illocalclose(c);
+@@ -341,10 +418,9 @@ ilclose(Conv *c)
+ 	ilfreeq(ic);
+ }
+ 
+-void
+-ilkick(void *x, Block *bp)
++static void
++ilxmit(Conv *c, Block *bp)
+ {
+-	Conv *c = x;
+ 	Ilhdr *ih;
+ 	Ilcb *ic;
+ 	int dlen;
+@@ -356,31 +432,12 @@ ilkick(void *x, Block *bp)
+ 	priv = c->p->priv;
+ 	ic = (Ilcb*)c->ptcl;
+ 
+-	if(bp == nil)
+-		return;
+-
+-	switch(ic->state) {
+-	case Ilclosed:
+-	case Illistening:
+-	case Ilclosing:
+-		freeblist(bp);
+-		qhangup(c->rq, nil);
+-		return;
+-	}
+-
+ 	dlen = blocklen(bp);
+ 
+ 	/* Make space to fit il & ip */
+-	bp = padblock(bp, IL_IPSIZE+IL_HDRSIZE);
+-	ih = (Ilhdr *)(bp->rp);
+-	ih->vihl = IP_VER4;
+-
+-	/* Ip fields */
+-	ih->frag[0] = 0;
+-	ih->frag[1] = 0;
+-	v6tov4(ih->dst, c->raddr);
+-	v6tov4(ih->src, c->laddr);
+-	ih->proto = IP_ILPROTO;
++	bp = padblock(bp, iliphdrlen(c->ipversion)+IL_HDRSIZE);
++	ilsetip(bp, c->ipversion, c->laddr, c->raddr);
++	ih = ilhdr(bp, c->ipversion);
+ 
+ 	/* Il fields */
+ 	hnputs(ih->illen, dlen+IL_HDRSIZE);
+@@ -401,7 +458,7 @@ ilkick(void *x, Block *bp)
+ 
+ 	/* Checksum of ilheader plus data (not ip & no pseudo header) */
+ 	if(ilcksum)
+-		hnputs(ih->ilsum, ptclcsum(bp, IL_IPSIZE, dlen+IL_HDRSIZE));
++		hnputs(ih->ilsum, ptclcsum(bp, iliphdrlen(c->ipversion), dlen+IL_HDRSIZE));
+ 
+ 	ilackq(ic, bp);
+ 	qunlock(&ic->ackq);
+@@ -410,20 +467,75 @@ ilkick(void *x, Block *bp)
+ 	if(ic->rttack == 0) {
+ 		ic->rttack = id;
+ 		ic->rttstart = fastticks(nil);
+-		ic->rttlen = dlen + IL_IPSIZE + IL_HDRSIZE;
++		ic->rttlen = dlen + iliphdrlen(c->ipversion) + IL_HDRSIZE;
+ 	}
+ 
+ 	if(later(NOW, ic->timeout, nil))
+ 		ilsettimeout(ic);
+-	ipoput4(f, bp, nil, c->ttl, c->tos, c);
++	ic->txbytes += dlen;
++	iloutput(f, bp, c->ipversion, c->ttl, c->tos, c);
+ 	priv->stats[OutMsgs]++;
+ }
+ 
++/* Called with the conversation locked, from a writer or an incoming ack. */
++void
++ilpump(Conv *c)
++{
++	Ilcb *ic;
++	Block *bp;
++	int n;
++
++	ic = (Ilcb*)c->ptcl;
++	if(ic->state == Ilclosed || ic->state == Illistening || ic->state == Ilclosing)
++		return;
++
++	while(ic->flight < ic->cwind){
++		bp = ic->pending;
++		if(bp == nil){
++			bp = qget(c->wq);
++			if(bp == nil)
++				break;
++		}
++		n = blocklen(bp) + iliphdrlen(c->ipversion) + IL_HDRSIZE;
++		if(ic->flight != 0 && ic->unackedbytes + n > Maxflight){
++			ic->pending = bp;
++			break;
++		}
++		if(ic->flowpeer && ic->txbytes + blocklen(bp) > (uvlong)Maxrq + ic->peerread){
++			ic->pending = bp;
++			break;
++		}
++		ic->pending = nil;
++		ilxmit(c, bp);
++	}
++}
++
++static void
++ilkick(void *x)
++{
++	Conv *c;
++	Ilcb *ic;
++
++	c = x;
++	ic = (Ilcb*)c->ptcl;
++	if(waserror()){
++		qunlock(c);
++		nexterror();
++	}
++	qlock(c);
++	if(ic->state == Ilclosed || ic->state == Illistening || ic->state == Ilclosing){
++		qhangup(c->rq, nil);
++	}else
++		ilpump(c);
++	qunlock(c);
++	poperror();
++}
++
+ static void
+ ilcreate(Conv *c)
+ {
+ 	c->rq = qopen(Maxrq, 0, 0, c);
+-	c->wq = qbypass(ilkick, c);
++	c->wq = qopen(Maxrq, Qkick, ilkick, c);
+ }
+ 
+ int
+@@ -458,6 +570,7 @@ ilackq(Ilcb *ic, Block *bp)
+ 	ic->unackedtail = np;
+ 	np->list = nil;
+ 	ic->unackedbytes += n;
++	ic->flight++;
+ }
+ 
+ static
+@@ -476,7 +589,7 @@ ilrttcalc(Ilcb *ic, Block *bp)
+ 		return;
+ 
+ 	/* this block had to be transmitted after the one acked so count its size */
+-	ic->rttlen += blocklen(bp)  + IL_IPSIZE + IL_HDRSIZE;
++	ic->rttlen += blocklen(bp) + iliphdrlen(ic->conv->ipversion) + IL_HDRSIZE;
+ 
+ 	if(ic->rttlen < 256){
+ 		/* guess fixed delay as rtt of small packets */
+@@ -508,6 +621,10 @@ ilackto(Ilcb *ic, ulong ackto, Block *bp)
+ {
+ 	Ilhdr *h;
+ 	ulong id;
++	int acked;
++
++	if(ackto >= ic->next)
++		return;
+ 
+ 	if(ic->rttack == ackto)
+ 		ilrttcalc(ic, bp);
+@@ -516,9 +633,10 @@ ilackto(Ilcb *ic, ulong ackto, Block *bp)
+ 	if(ic->rttack <= ackto)
+ 		ic->rttack = 0;
+ 
++	acked = 0;
+ 	qlock(&ic->ackq);
+ 	while(ic->unacked) {
+-		h = (Ilhdr *)ic->unacked->rp;
++		h = ilhdr(ic->unacked, ic->conv->ipversion);
+ 		id = nhgetl(h->ilid);
+ 		if(ackto < id)
+ 			break;
+@@ -527,11 +645,32 @@ ilackto(Ilcb *ic, ulong ackto, Block *bp)
+ 		ic->unacked = bp->list;
+ 		bp->list = nil;
+ 		ic->unackedbytes -= blocklen(bp);
++		ic->flight--;
++		acked++;
+ 		freeblist(bp);
+ 		ic->rexmit = 0;
+ 		ilsettimeout(ic);
+ 	}
++	if(ic->unacked == nil)
++		ic->unackedtail = nil;
+ 	qunlock(&ic->ackq);
++	if(acked != 0){
++		if(ic->inrecovery && ackto >= ic->recovery)
++			ic->inrecovery = 0;
++		if(ic->cwind < ic->ssthresh)
++			ic->cwind += acked;
++		else {
++			ic->acks += acked;
++			while(ic->acks >= ic->cwind){
++				ic->acks -= ic->cwind;
++				ic->cwind++;
++			}
++		}
++		if(ic->cwind > ic->window)
++			ic->cwind = ic->window;
++		ilpump(ic->conv);
++		iltryclose(ic->conv);
++	}
+ }
+ 
+ void
+@@ -540,29 +679,42 @@ iliput(Proto *il, Ipifc*, Block *bp)
+ 	char *st;
+ 	Ilcb *ic;
+ 	Ilhdr *ih;
++	Ip4hdr *h4;
++	Ip6hdr *h6;
+ 	uchar raddr[IPaddrlen];
+ 	uchar laddr[IPaddrlen];
+ 	ushort sp, dp, csum;
+-	int plen, illen;
++	int plen, illen, version, iplen;
+ 	Iphash *iph;
+ 	Conv *new, *s;
+ 	Ilpriv *ipriv;
+ 
+ 	ipriv = il->priv;
+ 
+-	ih = (Ilhdr *)bp->rp;
+ 	plen = blocklen(bp);
+-	if(plen > 0 && (ih->vihl&0xF0)!=IP_VER4)
+-		goto raise;	/* ignore non V4 packets */
++	if(plen == 0)
++		goto raise;
++	switch(bp->rp[0] & 0xF0){
++	case IP_VER4:
++		version = V4;
++		break;
++	case IP_VER6:
++		version = V6;
++		break;
++	default:
++		goto raise;
++	}
++	iplen = iliphdrlen(version);
+ 
+-	if(plen < IL_IPSIZE+IL_HDRSIZE){
++	if(plen < iplen+IL_HDRSIZE){
+ 		netlog(il->f, Logil, "il: hlenerr\n");
+ 		ipriv->stats[HlenErrs]++;
+ 		goto raise;
+ 	}
+ 
++	ih = ilhdr(bp, version);
+ 	illen = nhgets(ih->illen);
+-	if(illen+IL_IPSIZE > plen){
++	if(illen < IL_HDRSIZE || illen+iplen > plen){
+ 		netlog(il->f, Logil, "il: lenerr\n");
+ 		ipriv->stats[LenErrs]++;
+ 		goto raise;
+@@ -570,10 +722,17 @@ iliput(Proto *il, Ipifc*, Block *bp)
+ 
+ 	sp = nhgets(ih->ildst);
+ 	dp = nhgets(ih->ilsrc);
+-	v4tov6(raddr, ih->src);
+-	v4tov6(laddr, ih->dst);
++	if(version == V4){
++		h4 = (Ip4hdr*)bp->rp;
++		v4tov6(raddr, h4->src);
++		v4tov6(laddr, h4->dst);
++	} else {
++		h6 = (Ip6hdr*)bp->rp;
++		ipmove(raddr, h6->src);
++		ipmove(laddr, h6->dst);
++	}
+ 
+-	if((csum = ptclcsum(bp, IL_IPSIZE, illen)) != 0) {
++	if((csum = ptclcsum(bp, iplen, illen)) != 0) {
+ 		if(ih->iltype > Ilclose)
+ 			st = "?";
+ 		else
+@@ -583,12 +742,14 @@ iliput(Proto *il, Ipifc*, Block *bp)
+ 			csum, st, nhgetl(ih->ilid), nhgetl(ih->ilack), raddr, sp, dp);
+ 		goto raise;
+ 	}
++	if(ih->iltype > Ilclose)
++		goto raise;
+ 
+ 	qlock(il);
+ 	iph = iphtlook(&ipriv->ht, raddr, dp, laddr, sp);
+ 	if(iph == nil){
+ 		if(ih->iltype == Ilsync)
+-			ilreject(il->f, ih);		/* no listener */
++			ilreject(il->f, bp);		/* no listener */
+ 		qunlock(il);
+ 		goto raise;
+ 	}
+@@ -601,17 +762,17 @@ iliput(Proto *il, Ipifc*, Block *bp)
+ 				st = "?";
+ 			else
+ 				st = iltype[ih->iltype];
+-			ilreject(il->f, ih);		/* no channel and not sync */
++			ilreject(il->f, bp);		/* no channel and not sync */
+ 			netlog(il->f, Logil, "il: no channel, pkt(%s id %ud ack %ud %I/%ud->%ud)\n",
+ 				st, nhgetl(ih->ilid), nhgetl(ih->ilack), raddr, sp, dp); 
+ 			goto raise;
+ 		}
+ 
+-		new = Fsnewcall(s, raddr, dp, laddr, sp, V4);
++		new = Fsnewcall(s, raddr, dp, laddr, sp, version);
+ 		if(new == nil){
+ 			qunlock(il);
+ 			netlog(il->f, Logil, "il: bad newcall %I/%ud->%ud\n", raddr, sp, dp);
+-			ilsendctl(s, ih, Ilclose, 0, nhgetl(ih->ilid), 0);
++			ilreject(il->f, bp);
+ 			goto raise;
+ 		}
+ 		s = new;
+@@ -639,6 +800,27 @@ raise:
+ 	freeblist(bp);
+ }
+ 
++/* ACK and STATE carry read credit only after both SYNCs offered Ilflow. */
++static int
++ilcredit(Conv *s, Ilhdr *h)
++{
++	Ilcb *ic;
++	uchar *p;
++	uvlong read;
++
++	ic = (Ilcb*)s->ptcl;
++	if(!ic->flowpeer || nhgets(h->illen) < IL_HDRSIZE+Ilcreditlen)
++		return 0;
++	p = (uchar*)h + IL_HDRSIZE;
++	read = ((uvlong)nhgetl(p) << 32) | nhgetl(p+4);
++	if(read > ic->txbytes)
++		read = ic->txbytes;
++	if(read <= ic->peerread)
++		return 0;
++	ic->peerread = read;
++	return 1;
++}
++
+ void
+ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ {
+@@ -670,9 +852,10 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 			if(ack != ic->start)
+ 				ilhangup(s, "connection rejected");
+ 			else {
++				ic->flowpeer = (h->ilspec & Ilflow) != 0;
+ 				ic->recvd = id;
+ 				ic->rstart = id;
+-				ilsendctl(s, nil, Ilack, ic->next, ic->recvd, 0);
++				ilsendctl(s, Ilack, ic->next, ic->recvd, 0);
+ 				ic->state = Ilestablished;
+ 				ic->fasttimeout = 0;
+ 				ic->rexmit = 0;
+@@ -695,8 +878,9 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 			if(id != ic->rstart || ack != 0){
+ 				illocalclose(s);
+ 			} else {
++				ic->flowpeer = (h->ilspec & Ilflow) != 0;
+ 				ic->recvd = id;
+-				ilsendctl(s, nil, Ilsync, ic->start, ic->recvd, 0);
++				ilsendctl(s, Ilsync, ic->start, ic->recvd, 0);
+ 			}
+ 			break;
+ 		case Ilack:
+@@ -722,6 +906,7 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 		}
+ 		freeblist(bp);
+ 		break;
++	case Ildraining:
+ 	case Ilestablished:
+ 	established:
+ 		switch(h->iltype) {
+@@ -729,7 +914,7 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 			if(id != ic->rstart)
+ 				ilhangup(s, "remote close");
+ 			else
+-				ilsendctl(s, nil, Ilack, ic->next, ic->rstart, 0);
++				ilsendctl(s, Ilack, ic->next, ic->rstart, 0);
+ 			freeblist(bp);	
+ 			break;
+ 		case Ildata:
+@@ -752,21 +937,27 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 			ilackto(ic, ack, bp);
+ 			iloutoforder(s, h, bp);
+ 			ilpullup(s);
+-			ilsendctl(s, nil, Ilstate, ic->next, ic->recvd, h->ilspec);
++			ilsendctl(s, Ilstate, ic->next, ic->recvd, h->ilspec);
+ 			break;
+ 		case Ilack:
++			id = ilcredit(s, h);
+ 			ilackto(ic, ack, bp);
++			if(id)
++				ilpump(s);
+ 			freeblist(bp);
+ 			break;
+ 		case Ilquery:
+ 			ilackto(ic, ack, bp);
+-			ilsendctl(s, nil, Ilstate, ic->next, ic->recvd, h->ilspec);
++			ilsendctl(s, Ilstate, ic->next, ic->recvd, h->ilspec);
+ 			freeblist(bp);
+ 			break;
+ 		case Ilstate:
+ 			if(ack >= ic->rttack)
+ 				ic->rttack = 0;
++			id = ilcredit(s, h);
+ 			ilackto(ic, ack, bp);
++			if(id)
++				ilpump(s);
+ 			if(h->ilspec > Nqt)
+ 				h->ilspec = 0;
+ 			if(ic->qt[h->ilspec] > ack){
+@@ -780,7 +971,7 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 			if(ack < ic->start || ack > ic->next) 
+ 				break;
+ 			ic->recvd = id;
+-			ilsendctl(s, nil, Ilclose, ic->next, ic->recvd, 0);
++			ilsendctl(s, Ilclose, ic->next, ic->recvd, 0);
+ 			ic->state = Ilclosing;
+ 			ilsettimeout(ic);
+ 			ilfreeq(ic);
+@@ -794,7 +985,7 @@ _ilprocess(Conv *s, Ilhdr *h, Block *bp)
+ 		switch(h->iltype) {
+ 		case Ilclose:
+ 			ic->recvd = id;
+-			ilsendctl(s, nil, Ilclose, ic->next, ic->recvd, 0);
++			ilsendctl(s, Ilclose, ic->next, ic->recvd, 0);
+ 			if(ack == ic->next)
+ 				ilhangup(s, nil);
+ 			break;
+@@ -824,25 +1015,36 @@ ilrexmit(Ilcb *ic)
+ 	if(nb == nil)
+ 		return;
+ 
+-	h = (Ilhdr*)nb->rp;
+-	h->vihl = IP_VER4;
++	c = ic->conv;
++	h = ilhdr(nb, c->ipversion);
+ 
+ 	h->iltype = Ildataquery;
+ 	hnputl(h->ilack, ic->recvd);
+ 	h->ilspec = ilnextqt(ic);
+ 	h->ilsum[0] = 0;
+ 	h->ilsum[1] = 0;
+-	hnputs(h->ilsum, ptclcsum(nb, IL_IPSIZE, nhgets(h->illen)));
++	hnputs(h->ilsum, ptclcsum(nb, iliphdrlen(c->ipversion), nhgets(h->illen)));
+ 
+-	c = ic->conv;
+ 	id = nhgetl(h->ilid);
++	/* The state exchange confirmed loss; a timeout query alone does not. */
++	if(!ic->inrecovery){
++		ic->ssthresh = ic->cwind / 2;
++		if(ic->ssthresh < 2)
++			ic->ssthresh = 2;
++		ic->cwind = ic->ssthresh;
++		ic->acks = 0;
++		ic->recovery = ic->next - 1;
++		ic->inrecovery = 1;
++	}
++	/* Acknowledgements after a retransmission cannot give a valid RTT. */
++	ic->rttack = 0;
+ 	netlog(c->p->f, Logil, "il: rexmit %lud %lud: %d %lud: %I %d/%d\n", id, ic->recvd,
+ 		ic->rexmit, ic->timeout,
+ 		c->raddr, c->lport, c->rport);
+ 
+ 	ilbackoff(ic);
+ 
+-	ipoput4(c->p->f, nb, nil, c->ttl, c->tos, c);
++	iloutput(c->p->f, nb, c->ipversion, c->ttl, c->tos, c);
+ 
+ 	/* statistics */
+ 	ic->rxtot++;
+@@ -883,7 +1085,9 @@ ilhangup(Conv *s, char *msg)
+ 	illocalclose(s);
+ 
+ 	qhangup(s->rq, msg);
++	qclose(s->wq);
+ 	qhangup(s->wq, msg);
++	ilfreeq(ic);
+ 
+ 	if(callout)
+ 		Fsconnected(s, msg);
+@@ -905,7 +1109,7 @@ ilpullup(Conv *s)
+ 	qlock(&ic->outo);
+ 	while(ic->outoforder) {
+ 		bp = ic->outoforder;
+-		oh = (Ilhdr*)bp->rp;
++		oh = ilhdr(bp, s->ipversion);
+ 		oid = nhgetl(oh->ilid);
+ 		if(oid <= ic->recvd) {
+ 			ic->outoforder = bp->list;
+@@ -917,19 +1121,23 @@ ilpullup(Conv *s)
+ 			ipriv->stats[OutOfOrder]++;
+ 			break;
+ 		}
++		dlen = nhgets(oh->illen)-IL_HDRSIZE;
++		if(qlen(s->rq) + dlen > Maxrq)
++			break;
+ 
+ 		ic->recvd = oid;
+ 		ic->outoforder = bp->list;
+ 
+ 		bp->list = nil;
+-		dlen = nhgets(oh->illen)-IL_HDRSIZE;
+-		bp = trimblock(bp, IL_IPSIZE+IL_HDRSIZE, dlen);
++		bp = trimblock(bp, iliphdrlen(s->ipversion)+IL_HDRSIZE, dlen);
+ 			
+ 		/*
+ 		 * Upper levels don't know about multiple-block
+ 		 * messages so copy all into one (yick).
+ 		 */
+-		qpass(s->rq, packblock(concatblock(bp)));
++		/* Capacity was checked above; Qflow also counts block allocation. */
++		if(qpassnolim(s->rq, packblock(concatblock(bp))) == dlen)
++			ic->rxqueued += dlen;
+ 	}
+ 	qunlock(&ic->outo);
+ }
+@@ -963,7 +1171,7 @@ iloutoforder(Conv *s, Ilhdr *h, Block *bp)
+ 	else {
+ 		l = &ic->outoforder;
+ 		for(f = *l; f; f = f->list) {
+-			lid = ((Ilhdr*)(f->rp))->ilid;
++			lid = ilhdr(f, s->ipversion)->ilid;
+ 			newid = nhgetl(lid);
+ 			if(id <= newid) {
+ 				if(id == newid) {
+@@ -986,99 +1194,93 @@ iloutoforder(Conv *s, Ilhdr *h, Block *bp)
+ }
+ 
+ int
+-ilsendctl(Conv *ipc, Ilhdr *inih, int type, ulong id, ulong ack, int ilspec)
++ilsendctl(Conv *ipc, int type, ulong id, ulong ack, int ilspec)
+ {
+ 	Ilhdr *ih;
+ 	Ilcb *ic;
+ 	Block *bp;
+-	int ttl, tos;
+-
+-	bp = allocb(IL_IPSIZE+IL_HDRSIZE);
+-	bp->wp += IL_IPSIZE+IL_HDRSIZE;
+-
+-	ih = (Ilhdr *)(bp->rp);
+-	ih->vihl = IP_VER4;
+-
+-	/* Ip fields */
+-	ih->proto = IP_ILPROTO;
+-	hnputs(ih->illen, IL_HDRSIZE);
+-	ih->frag[0] = 0;
+-	ih->frag[1] = 0;
+-	if(inih != nil) {
+-		hnputl(ih->dst, nhgetl(inih->src));
+-		hnputl(ih->src, nhgetl(inih->dst));
+-		hnputs(ih->ilsrc, nhgets(inih->ildst));
+-		hnputs(ih->ildst, nhgets(inih->ilsrc));
+-		hnputl(ih->ilid, nhgetl(inih->ilack));
+-		hnputl(ih->ilack, nhgetl(inih->ilid));
+-		ttl = MAXTTL;
+-		tos = DFLTTOS;
+-	}
+-	else {
+-		v6tov4(ih->dst, ipc->raddr);
+-		v6tov4(ih->src, ipc->laddr);
+-		hnputs(ih->ilsrc, ipc->lport);
+-		hnputs(ih->ildst, ipc->rport);
+-		hnputl(ih->ilid, id);
+-		hnputl(ih->ilack, ack);
+-		ic = (Ilcb*)ipc->ptcl;
+-		ic->acksent = ack;
+-		ic->acktime = NOW;
+-		ttl = ipc->ttl;
+-		tos = ipc->tos;
+-	}
++	uchar *p;
++	uvlong read;
++	int iplen, clen;
++
++	ic = (Ilcb*)ipc->ptcl;
++	clen = ic->flowpeer && (type == Ilack || type == Ilstate) ? Ilcreditlen : 0;
++	iplen = iliphdrlen(ipc->ipversion);
++	bp = allocb(iplen+IL_HDRSIZE+clen);
++	bp->wp += iplen+IL_HDRSIZE+clen;
++	ilsetip(bp, ipc->ipversion, ipc->laddr, ipc->raddr);
++	ih = ilhdr(bp, ipc->ipversion);
++	hnputs(ih->illen, IL_HDRSIZE+clen);
++	hnputs(ih->ilsrc, ipc->lport);
++	hnputs(ih->ildst, ipc->rport);
++	hnputl(ih->ilid, id);
++	hnputl(ih->ilack, ack);
++	ic->acksent = ack;
++	ic->acktime = NOW;
+ 	ih->iltype = type;
+-	ih->ilspec = ilspec;
++	ih->ilspec = type == Ilsync ? Ilflow : ilspec;
++	if(clen){
++		/* Closing the queue discards unread data; it grants no new credit. */
++		read = ic->state == Ildraining ? ic->creditread : ic->rxqueued - qlen(ipc->rq);
++		p = (uchar*)ih + IL_HDRSIZE;
++		hnputl(p, read >> 32);
++		hnputl(p+4, read);
++		ic->creditread = read;
++	}
+ 	ih->ilsum[0] = 0;
+ 	ih->ilsum[1] = 0;
+ 
+ 	if(ilcksum)
+-		hnputs(ih->ilsum, ptclcsum(bp, IL_IPSIZE, IL_HDRSIZE));
+-
+-if(ipc==nil)
+-	panic("ipc is nil caller is %#p", getcallerpc(&ipc));
+-if(ipc->p==nil)
+-	panic("ipc->p is nil");
++		hnputs(ih->ilsum, ptclcsum(bp, iplen, IL_HDRSIZE+clen));
+ 
+ 	netlog(ipc->p->f, Logilmsg, "ctl(%s id %d ack %d %d->%d)\n",
+-		iltype[ih->iltype], nhgetl(ih->ilid), nhgetl(ih->ilack), 
++		iltype[ih->iltype], nhgetl(ih->ilid), nhgetl(ih->ilack),
+ 		nhgets(ih->ilsrc), nhgets(ih->ildst));
+ 
+-	return ipoput4(ipc->p->f, bp, nil, ttl, tos, ipc);
++	return iloutput(ipc->p->f, bp, ipc->ipversion, ipc->ttl, ipc->tos, ipc);
+ }
+ 
+ void
+-ilreject(Fs *f, Ilhdr *inih)
++ilreject(Fs *f, Block *inbp)
+ {
+-	Ilhdr *ih;
++	Ilhdr *in, *ih;
++	Ip4hdr *h4;
++	Ip6hdr *h6;
+ 	Block *bp;
++	uchar src[IPaddrlen], dst[IPaddrlen];
++	int version, iplen;
++
++	version = (inbp->rp[0] & 0xF0) == IP_VER6 ? V6 : V4;
++	iplen = iliphdrlen(version);
++	in = ilhdr(inbp, version);
++	if(version == V4){
++		h4 = (Ip4hdr*)inbp->rp;
++		v4tov6(src, h4->src);
++		v4tov6(dst, h4->dst);
++	} else {
++		h6 = (Ip6hdr*)inbp->rp;
++		ipmove(src, h6->src);
++		ipmove(dst, h6->dst);
++	}
+ 
+-	bp = allocb(IL_IPSIZE+IL_HDRSIZE);
+-	bp->wp += IL_IPSIZE+IL_HDRSIZE;
+-
+-	ih = (Ilhdr *)(bp->rp);
+-	ih->vihl = IP_VER4;
+-
+-	/* Ip fields */
+-	ih->proto = IP_ILPROTO;
++	bp = allocb(iplen+IL_HDRSIZE);
++	bp->wp += iplen+IL_HDRSIZE;
++	ilsetip(bp, version, dst, src);
++	ih = ilhdr(bp, version);
+ 	hnputs(ih->illen, IL_HDRSIZE);
+-	ih->frag[0] = 0;
+-	ih->frag[1] = 0;
+-	hnputl(ih->dst, nhgetl(inih->src));
+-	hnputl(ih->src, nhgetl(inih->dst));
+-	hnputs(ih->ilsrc, nhgets(inih->ildst));
+-	hnputs(ih->ildst, nhgets(inih->ilsrc));
+-	hnputl(ih->ilid, nhgetl(inih->ilack));
+-	hnputl(ih->ilack, nhgetl(inih->ilid));
++	hnputs(ih->ilsrc, nhgets(in->ildst));
++	hnputs(ih->ildst, nhgets(in->ilsrc));
++	hnputl(ih->ilid, nhgetl(in->ilack));
++	hnputl(ih->ilack, nhgetl(in->ilid));
+ 	ih->iltype = Ilclose;
+ 	ih->ilspec = 0;
+ 	ih->ilsum[0] = 0;
+ 	ih->ilsum[1] = 0;
+ 
+ 	if(ilcksum)
+-		hnputs(ih->ilsum, ptclcsum(bp, IL_IPSIZE, IL_HDRSIZE));
++		hnputs(ih->ilsum, ptclcsum(bp, iplen, IL_HDRSIZE));
+ 
+-	ipoput4(f, bp, nil, MAXTTL, DFLTTOS, nil);
++	iloutput(f, bp, version, MAXTTL, DFLTTOS, nil);
+ }
+ 
+ void
+@@ -1153,6 +1355,11 @@ loop:
+ 	tsleep(&up->sleep, return0, 0, Iltickms);
+ 	for(s = il->conv; s && *s; s++) {
+ 		p = *s;
++		qlock(p);
++		if(waserror()){
++			qunlock(p);
++			continue;
++		}
+ 		ic = (Ilcb*)p->ptcl;
+ 
+ 		switch(ic->state) {
+@@ -1165,7 +1372,7 @@ loop:
+ 					ilhangup(p, nil);
+ 					break;
+ 				}
+-				ilsendctl(p, nil, Ilclose, ic->next, ic->recvd, 0);
++				ilsendctl(p, Ilclose, ic->next, ic->recvd, 0);
+ 				ilbackoff(ic);
+ 			}
+ 			break;
+@@ -1177,15 +1384,20 @@ loop:
+ 					ilhangup(p, etime);
+ 					break;
+ 				}
+-				ilsendctl(p, nil, Ilsync, ic->start, ic->recvd, 0);
++				ilsendctl(p, Ilsync, ic->start, ic->recvd, 0);
+ 				ilbackoff(ic);
+ 			}
+ 			break;
+ 
++		case Ildraining:
+ 		case Ilestablished:
++			if(ic->outoforder != nil)
++				ilpullup(p);
+ 			if(ic->recvd != ic->acksent)
+ 			if(later(NOW, ic->acktime, "acktime"))
+-				ilsendctl(p, nil, Ilack, ic->next, ic->recvd, 0);
++				ilsendctl(p, Ilack, ic->next, ic->recvd, 0);
++			if(ic->state == Ilestablished && ic->flowpeer && ic->rxqueued - qlen(p->rq) > ic->creditread)
++				ilsendctl(p, Ilack, ic->next, ic->recvd, 0);
+ 
+ 			if(later(NOW, ic->querytime, "querytime")){
+ 				if(later(NOW, ic->lastrecv+DeathTime, "deathtime")){
+@@ -1193,7 +1405,7 @@ loop:
+ 					ilhangup(p, etime);
+ 					break;
+ 				}
+-				ilsendctl(p, nil, Ilquery, ic->next, ic->recvd, ilnextqt(ic));
++				ilsendctl(p, Ilquery, ic->next, ic->recvd, ilnextqt(ic));
+ 				ic->querytime = NOW + QueryTime;
+ 			}
+ 
+@@ -1204,12 +1416,14 @@ loop:
+ 					ilhangup(p, etime);
+ 					break;
+ 				}
+-				ilsendctl(p, nil, Ilquery, ic->next, ic->recvd, ilnextqt(ic));
++				ilsendctl(p, Ilquery, ic->next, ic->recvd, ilnextqt(ic));
+ 				ic->rxquery++;
+ 				ilbackoff(ic);
+ 			}
+ 			break;
+ 		}
++		qunlock(p);
++		poperror();
+ 	}
+ 	goto loop;
+ }
+@@ -1221,7 +1435,19 @@ ilcbinit(Ilcb *ic)
+ 	ic->next = ic->start+1;
+ 	ic->recvd = 0;
+ 	ic->window = Defaultwin;
++	ic->cwind = Initialwin;
++	ic->ssthresh = Defaultwin;
++	ic->acks = 0;
++	ic->inrecovery = 0;
++	ic->recovery = 0;
++	ic->flight = 0;
++	ic->pending = nil;
+ 	ic->unackedbytes = 0;
++	ic->txbytes = 0;
++	ic->rxqueued = 0;
++	ic->peerread = 0;
++	ic->creditread = 0;
++	ic->flowpeer = 0;
+ 	ic->unacked = nil;
+ 	ic->outoforder = nil;
+ 	ic->rexmit = 0;
+@@ -1284,7 +1510,7 @@ ilstart(Conv *c, int type, int fasttimeout)
+ 	case IL_CONNECT:
+ 		ic->state = Ilsyncer;
+ 		iphtadd(&ipriv->ht, c);
+-		if(ilsendctl(c, nil, Ilsync, ic->start, ic->recvd, 0) < 0)
++		if(ilsendctl(c, Ilsync, ic->start, ic->recvd, 0) < 0)
+ 			ilhangup(c, "no route");
+ 		break;
+ 	}
+@@ -1303,7 +1529,12 @@ ilfreeq(Ilcb *ic)
+ 		freeblist(bp);
+ 	}
+ 	ic->unacked = nil;
++	ic->unackedtail = nil;
++	ic->unackedbytes = 0;
++	ic->flight = 0;
+ 	qunlock(&ic->ackq);
++	freeblist(ic->pending);
++	ic->pending = nil;
+ 
+ 	qlock(&ic->outo);
+ 	for(bp = ic->outoforder; bp; bp = next) {
+@@ -1321,17 +1552,33 @@ iladvise(Proto *il, Block *bp, Ipifc*, char *msg)
+ 	ushort psource, pdest;
+ 	Iphash *iph;
+ 	Ilhdr *h;
++	Ip4hdr *h4;
++	Ip6hdr *h6;
+ 	Ilcb *ic;		
+ 	Conv *s;
++	int version, iplen;
+ 
+-	if(BLEN(bp) < IL_IPSIZE+IL_HDRSIZE-8){
++	if(BLEN(bp) == 0){
++		freeblist(bp);
++		return;
++	}
++	version = (bp->rp[0] & 0xF0) == IP_VER6 ? V6 : V4;
++	iplen = iliphdrlen(version);
++	if(BLEN(bp) < iplen+10){
+ 		freeblist(bp);
+ 		return;
+ 	}
+ 
+-	h = (Ilhdr*)(bp->rp);
+-	v4tov6(dest, h->dst);
+-	v4tov6(source, h->src);
++	h = ilhdr(bp, version);
++	if(version == V4){
++		h4 = (Ip4hdr*)bp->rp;
++		v4tov6(dest, h4->dst);
++		v4tov6(source, h4->src);
++	} else {
++		h6 = (Ip6hdr*)bp->rp;
++		ipmove(dest, h6->dst);
++		ipmove(source, h6->src);
++	}
+ 	pdest = nhgets(h->ildst);
+ 	psource = nhgets(h->ilsrc);
+ 
+diff --git a/sys/src/cmd/ndb/cs.c b/sys/src/cmd/ndb/cs.c
+index 4dcb644ab..24e63b6b6 100644
+--- a/sys/src/cmd/ndb/cs.c
++++ b/sys/src/cmd/ndb/cs.c
+@@ -163,9 +163,9 @@ enum {
+  *  net doesn't apply to (r)udp, icmp(v6), or telco (for speed).
+  */
+ Network network[] = {
+-	{ "il",		iplookup,	iptrans,	0, 1, V4,	},
++	{ "il",		iplookup,	iptrans,	0, 1, V4|V6,	},
+ 	{ "tcp",	iplookup,	iptrans,	0, 0, V4|V6,	},
+-	{ "il",		iplookup,	iptrans,	0, 0, V4,	},
++	{ "il",		iplookup,	iptrans,	0, 0, V4|V6,	},
+ 	{ "udp",	iplookup,	iptrans,	1, 0, V4|V6,	},
+ 	{ "icmp",	iplookup,	iptrans,	1, 0, V4,	},
+ 	{ "icmpv6",	iplookup,	iptrans,	1, 0, V6,	},
