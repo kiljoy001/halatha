@@ -7,33 +7,31 @@ keep 9front as a fallback.
 
 ## Current milestone
 
-`examples/basic-v64-harvey.html` boots the Harvey multiboot kernel on v64 with
-the x86_64 CPU profile and ACPI. The kernel brings up `#I`, `#l0`, virtio-9p
-and the in-kernel scheduler, mounts a read-only 9P root through a small
-9P2000 server, and executes `/boot/boot` from that root. The serial console
-reaches:
+`examples/basic-v64-harvey.html` boots the real Harvey init under v64 with the
+x86_64 CPU profile and ACPI. The kernel brings up `#I`, `#l0`, virtio-9p and
+the in-kernel scheduler, mounts a read-only 9P root through a small 9P2000
+server, and executes `/boot/boot` from that root. The serial console reaches:
 
 ```
 #9/0: virtio9p tag "host9p" nslot 16 msize 65560
 #l0: virtio: 1000Mbps ...
 init: mounting #9/0 to /...
-HALATHA: Harvey userland on v64
-HALATHA: root read 22: Harvey on Halatha/v64
-HALATHA: entering idle
+...
+Phase 3 Self-Test Finished
+o9-supervisor: steady-state loop active (pid 1 staying alive)
 ```
 
 The 9P root is served by `extras/harvey/js9p2000.js`. v64's built-in basefs
 server is 9P2000.L, which Harvey does not speak; the raw virtio-9p handler
 with this server is 9P2000 end to end.
 
-The next work is the real Halatha userland: `v64init.c` is intentionally
-minimal. Replace it with the Halatha/Aspera image, add writable storage and
-the virtio-net link, and then remove the 9front image from the product path.
+The init's idle path deliberately uses one non-returning task. Repeated
+spawn/free of short-lived result channels exposes a v64 use-after-free in
+`alt()`, where the channel has already been freed and `qentry` is null.
 
-The CPUID signature `0x670` needs a v64-safe frequency path: v64 does not
-implement MSR 0x2a, so `archamd64.c` must not take a #GP while probing the FSB.
-The current kernel detects v64's AVX-bearing 0x670 profile; keep that guard
-until there is a general `rdmsr_safe` path.
+The next work is the Halatha/Aspera userland and writable storage. Replace
+`/boot/boot` with the product init, then remove the 9front image from the
+product path.
 
 ## Build a diagnostic root
 

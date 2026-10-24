@@ -22,6 +22,7 @@ def main() -> int:
     ap.add_argument("--harvey-repo", default=os.environ.get("HARVEY_REPO", str(HERE.parent.parent.parent / "harvey")))
     ap.add_argument("--out", default=str(HERE.parent.parent / "local/harvey"))
     ap.add_argument("--kernel", default="")
+    ap.add_argument("--init", choices=("full", "minimal"), default="full")
     args = ap.parse_args()
     repo = Path(args.harvey_repo).resolve()
     out = Path(args.out).resolve()
@@ -41,9 +42,14 @@ def main() -> int:
     for d in DIRS:
         (root / d).mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "README.md", root / "README.md")
-    boot = repo / "build/v64init"
-    if not boot.is_file():
-        subprocess.run([sys.executable, str(repo / "util/9vm/build_v64init.py")], check=True)
+    if args.init == "full":
+        boot = repo / "boot/boot"
+        if not boot.is_file():
+            subprocess.run([sys.executable, str(repo / "util/9vm/build_boot.py")], check=True)
+    else:
+        boot = repo / "build/v64init"
+        if not boot.is_file():
+            subprocess.run([sys.executable, str(repo / "util/9vm/build_v64init.py")], check=True)
     shutil.copy2(boot, root / "boot/boot")
     init = repo / "build/init"
     if init.is_file():
