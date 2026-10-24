@@ -7,31 +7,32 @@ keep 9front as a fallback.
 
 ## Current milestone
 
-`examples/basic-v64-harvey.html` boots the real Harvey init under v64 with the
-x86_64 CPU profile and ACPI. The kernel brings up `#I`, `#l0`, virtio-9p and
-the in-kernel scheduler, mounts a read-only 9P root through a small 9P2000
-server, and executes `/boot/boot` from that root. The serial console reaches:
+The v64 page boots the **Halatha shell userland** on Harvey:
 
 ```
-#9/0: virtio9p tag "host9p" nslot 16 msize 65560
-#l0: virtio: 1000Mbps ...
-init: mounting #9/0 to /...
-...
-Phase 3 Self-Test Finished
-o9-supervisor: steady-state loop active (pid 1 staying alive)
+Halatha / Harvey on v64
+halatha: starting /bin/rc
+% echo HALATHA-SHELL
+HALATHA-SHELL
+%
 ```
 
-The 9P root is served by `extras/harvey/js9p2000.js`. v64's built-in basefs
-server is 9P2000.L, which Harvey does not speak; the raw virtio-9p handler
-with this server is 9P2000 end to end.
+The root is served by `extras/harvey/js9p2000.js`; v64's built-in basefs is
+9P2000.L, but Harvey's `#9` is 9P2000, so the raw virtio-9p handler is used.
+The boot path is:
 
-The init's idle path deliberately uses one non-returning task. Repeated
-spawn/free of short-lived result channels exposes a v64 use-after-free in
-`alt()`, where the channel has already been freed and `qentry` is null.
+- Harvey kernel: x86_64, ACPI, PCI, `#I`, `#l0`, `#9`.
+- read-only 9P2000 root over virtio-9p.
+- `boot/halatha_init.o9` binds `/dev`, `/proc`, `/srv`, `/env`.
+- `/bin/rc` reads `/rc/lib/rcmain` and runs the serial shell.
 
-The next work is the Halatha/Aspera userland and writable storage. Replace
-`/boot/boot` with the product init, then remove the 9front image from the
-product path.
+`mkroot.py` stages `rc`, `echo`, `test`, `ls`, `cat` and `rcmain` into the root.
+The page provides a serial input line for the shell.
+
+## Remaining
+
+Writable storage, the virtio-net link, and the graphical Halatha/Aspera layer.
+The shell path is the first product userland; it does not use 9front.
 
 ## Build a diagnostic root
 

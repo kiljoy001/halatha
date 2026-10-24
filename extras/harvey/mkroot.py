@@ -22,7 +22,7 @@ def main() -> int:
     ap.add_argument("--harvey-repo", default=os.environ.get("HARVEY_REPO", str(HERE.parent.parent.parent / "harvey")))
     ap.add_argument("--out", default=str(HERE.parent.parent / "local/harvey"))
     ap.add_argument("--kernel", default="")
-    ap.add_argument("--init", choices=("full", "minimal"), default="full")
+    ap.add_argument("--init", choices=("halatha", "full", "minimal"), default="halatha")
     args = ap.parse_args()
     repo = Path(args.harvey_repo).resolve()
     out = Path(args.out).resolve()
@@ -42,7 +42,21 @@ def main() -> int:
     for d in DIRS:
         (root / d).mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "README.md", root / "README.md")
-    if args.init == "full":
+    if args.init == "halatha":
+        boot = repo / "build/halatha-init"
+        if not boot.is_file():
+            subprocess.run([sys.executable, str(repo / "util/9vm/build_halatha_init.py")], check=True)
+        for dest, src in (
+            ("bin/rc", "build/aspera-rc"),
+            ("bin/echo", "build/aspera-echo"),
+            ("bin/test", "build/aspera-test"),
+            ("bin/ls", "build/aspera-ls"),
+            ("bin/cat", "build/aspera-cat"),
+            ("rc/lib/rcmain", "rc/lib/rcmain"),
+        ):
+            (root / dest).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo / src, root / dest)
+    elif args.init == "full":
         boot = repo / "boot/boot"
         if not boot.is_file():
             subprocess.run([sys.executable, str(repo / "util/9vm/build_boot.py")], check=True)

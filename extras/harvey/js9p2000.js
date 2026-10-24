@@ -60,7 +60,11 @@ class NineP2000 {
     const parts = path.split("/").filter(Boolean);
     let n = this.root;
     for (let i = 0; i < parts.length - 1; i++) {
-      if (!n.children[parts[i]]) n.children[parts[i]] = dir(parts[i]);
+      if (!n.children[parts[i]]) {
+        const d = dir(parts[i]);
+        this.assign(d);
+        n.children[parts[i]] = d;
+      }
       n = n.children[parts[i]];
     }
     const name = parts[parts.length - 1];

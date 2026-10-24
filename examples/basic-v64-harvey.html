@@ -22,7 +22,7 @@ import { V86 } from "../v64/lib/libv86.mjs";
 import { NineP2000 } from "../extras/harvey/js9p2000.js";
 
 const p9 = new NineP2000();
-for (const f of ["boot/boot", "boot/init"]) {
+for (const f of ["boot/boot", "boot/init", "bin/rc", "bin/echo", "bin/test", "bin/ls", "bin/cat", "rc/lib/rcmain"]) {
   try {
     const r = await fetch("../local/harvey/rootfs/" + f);
     if (r.ok) p9.addFile(f, await r.arrayBuffer());
