@@ -8,25 +8,30 @@ keep 9front as a fallback.
 ## Current milestone
 
 `examples/basic-v64-harvey.html` boots the Harvey multiboot kernel on v64 with
-the x86_64 CPU profile and ACPI. The serial console reaches:
+the x86_64 CPU profile and ACPI. The kernel brings up `#I`, `#l0`, virtio-9p
+and the in-kernel scheduler, mounts a read-only 9P root through a small
+9P2000 server, and executes `/boot/boot` from that root. The serial console
+reaches:
 
 ```
-Harvey
-CPU Signature: 670
-CPU Freq. 1000MHz
+#9/0: virtio9p tag "host9p" nslot 16 msize 65560
+#l0: virtio: 1000Mbps ...
 init: mounting #9/0 to /...
+HALATHA: Harvey userland on v64
 ```
 
-Harvey's built-in init then fails to open `#9/0` on v64. The v64 virtio-9p
-device is legacy/transitional: it exposes the standard config/queue/ISR BARs
-but its PCI capabilities are not the modern memory-BAR layout Harvey's
-`#9` driver currently assumes. The next change is the legacy-virtio path for
-9P (and virtio-net), not a 9front compatibility shim.
+The 9P root is served by `extras/harvey/js9p2000.js`. v64's built-in basefs
+server is 9P2000.L, which Harvey does not speak; the raw virtio-9p handler
+with this server is 9P2000 end to end.
 
-The CPUID signature `0x670` also needs a v64-safe frequency path: v64 does not
-implement MSR 0x2a, so `archamd64.c` must not take a #GP while probing the
-FSB. The current kernel has a narrow diagnostic fallback; it needs a clean
-`rdmsr_safe`/CPUID 0x16 path before release.
+The next work is the real Halatha userland: `v64init.c` is intentionally
+minimal. Replace it with the Halatha/Aspera image, add writable storage and
+the virtio-net link, and then remove the 9front image from the product path.
+
+The CPUID signature `0x670` needs a v64-safe frequency path: v64 does not
+implement MSR 0x2a, so `archamd64.c` must not take a #GP while probing the FSB.
+The current kernel detects v64's AVX-bearing 0x670 profile; keep that guard
+until there is a general `rdmsr_safe` path.
 
 ## Build a diagnostic root
 

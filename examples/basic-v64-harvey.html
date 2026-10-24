@@ -16,6 +16,16 @@ html,body{margin:0;background:#111;color:#ddd;font:13px ui-monospace,monospace}
 <div id="serial"></div>
 <script type="module">
 import { V86 } from "../v64/lib/libv86.mjs";
+import { NineP2000 } from "../extras/harvey/js9p2000.js";
+
+const p9 = new NineP2000();
+for (const f of ["boot/boot", "boot/init"]) {
+  try {
+    const r = await fetch("../local/harvey/rootfs/" + f);
+    if (r.ok) p9.addFile(f, await r.arrayBuffer());
+    else console.warn("missing root file", f, r.status);
+  } catch (e) { console.warn("root file", f, e); }
+}
 
 const serial = document.getElementById("serial");
 const log = (s) => { serial.textContent += s; };
@@ -33,7 +43,7 @@ const vm = new V86({
   vga_bios: { url: "../v64/bios/vgabios.bin" },
   multiboot: { url: "../local/harvey/harvey.32bit" },
   cmdline: "bootargs=local!#9/0 nobootprompt=local",
-  filesystem: { basefs: "../local/harvey/fs.json", baseurl: "../local/harvey/base/" },
+  filesystem: { handle9p: (req, reply) => p9.handle(req, reply) },
   net_device: { type: "virtio" },
   screen_container: document.getElementById("screen"),
   autostart: true,

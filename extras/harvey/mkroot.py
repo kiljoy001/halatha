@@ -41,6 +41,13 @@ def main() -> int:
     for d in DIRS:
         (root / d).mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "README.md", root / "README.md")
+    boot = repo / "build/v64init"
+    if not boot.is_file():
+        subprocess.run([sys.executable, str(repo / "util/9vm/build_v64init.py")], check=True)
+    shutil.copy2(boot, root / "boot/boot")
+    init = repo / "build/init"
+    if init.is_file():
+        shutil.copy2(init, root / "boot/init")
     shutil.copy2(kernel, out / "harvey.32bit")
     with (out / "fs.json").open("w") as f:
         subprocess.run([sys.executable, str(TOOLS / "fs2json.py"), "--out", "-", str(root)],
