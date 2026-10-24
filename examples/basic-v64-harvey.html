@@ -14,7 +14,7 @@ html,body{margin:0;background:#111;color:#ddd;font:13px ui-monospace,monospace}
 </style>
 </head>
 <body>
-<div id="screen" tabindex="0"><div></div><canvas></canvas></div>
+<div id="screen" tabindex="0"><canvas id="aspera" width="1024" height="768" style="width:100%;height:100%;display:block"></canvas></div>
 <div id="serial"></div>
 <form id="cmdform"><input id="cmd" autocomplete="off" placeholder="guest serial input (Enter)" autofocus></form>
 <script type="module">
@@ -22,7 +22,47 @@ import { V86 } from "../v64/lib/libv86.mjs";
 import { NineP2000 } from "../extras/harvey/js9p2000.js";
 
 const p9 = new NineP2000();
-for (const f of ["boot/boot", "boot/init", "bin/rc", "bin/echo", "bin/test", "bin/ls", "bin/cat", "rc/lib/rcmain"]) {
+const asp = document.getElementById("aspera");
+const actx = asp.getContext("2d");
+const frameSlots = [new Uint8Array(1024 * 768 * 4), new Uint8Array(1024 * 768 * 4)];
+let activeSlot = 0;
+function drawSlot(slot) {
+  const src = frameSlots[slot];
+  const img = actx.createImageData(1024, 768);
+  const dst = img.data;
+  for (let i = 0, j = 0; i < src.length; i += 4, j += 4) {
+    dst[j] = src[i + 2]; dst[j + 1] = src[i + 1]; dst[j + 2] = src[i]; dst[j + 3] = 255;
+  }
+  actx.putImageData(img, 0, 0);
+}
+function ctlWrite(node, off, data) {
+  const text = new TextDecoder().decode(data);
+  const m = text.match(/begin\s+(\d+)/);
+  if (m) activeSlot = Number(m[1]) % 2;
+  if (/commit/.test(text)) drawSlot(activeSlot);
+}
+function screenWrite(node, off, data) {
+  // Delta tile: 8-byte x/y/w/h header followed by 32x16 pixels.
+  if (data.length >= 8 && data.length !== 1024 * 768 * 4) {
+    const x = data[0] | (data[1] << 8);
+    const y = data[2] | (data[3] << 8);
+    const w = data[4] | (data[5] << 8);
+    const h = data[6] | (data[7] << 8);
+    const px = data.subarray(8);
+    const dst = frameSlots[activeSlot];
+    for (let row = 0; row < h; row++)
+      dst.set(px.subarray(row * w * 4, (row + 1) * w * 4),
+              ((y + row) * 1024 + x) * 4);
+    return;
+  }
+  frameSlots[activeSlot].set(data.subarray(0, Math.min(data.length, frameSlots[activeSlot].length)), off);
+}
+for (const slot of [0, 1]) {
+  p9.addFile("build/aspera-live/dev/screen" + slot, new Uint8Array(0), true, screenWrite);
+}
+p9.addFile("build/aspera-live/dev/ctl", new Uint8Array(0), true, ctlWrite);
+p9.addFile("build/aspera-live/dev/input", new Uint8Array(0), true);
+for (const f of ["boot/boot", "boot/init", "bin/rc", "bin/echo", "bin/test", "bin/ls", "bin/cat", "bin/aspera-live", "bin/aspera-shelf-service", "rc/lib/rcmain", "build/aspera-live/notepath", "build/aspera-live/clock", "build/aspera-live/note.txt"]) {
   try {
     const r = await fetch("../local/harvey/rootfs/" + f);
     if (r.ok) p9.addFile(f, await r.arrayBuffer());

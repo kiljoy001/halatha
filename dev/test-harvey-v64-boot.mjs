@@ -17,22 +17,21 @@ const started = Date.now();
 let text = "";
 while (Date.now() - started < timeout) {
   text = await page.evaluate(() => document.getElementById("serial")?.textContent || "");
-  if (text.includes("% ") || text.includes("panic:")) break;
+  if (text.includes("ASPERA-LIVE READY") || text.includes("panic:")) break;
   await page.waitForTimeout(500);
 }
-
-let shellOut = text;
-if (text.includes("% ")) {
-  await page.fill("#cmd", "echo HALATHA-SHELL");
-  await page.press("#cmd", "Enter");
-  await page.waitForTimeout(1500);
-  shellOut = await page.evaluate(() => document.getElementById("serial")?.textContent || "");
-}
+const canvas = await page.evaluate(() => {
+  const c = document.getElementById("aspera");
+  if (!c) return null;
+  const d = c.getContext("2d").getImageData(0, 0, 1024, 768).data;
+  let nonblack = 0;
+  for (let i = 0; i < d.length; i += 4)
+    if (d[i] || d[i + 1] || d[i + 2]) nonblack++;
+  return { nonblack };
+});
 await browser.close();
-
-console.log(shellOut.split("\n").slice(-30).join("\n"));
+console.log(text.split("\n").slice(-30).join("\n"));
 for (const e of errors) console.log("page error:", e);
-const ok = shellOut.includes("Halatha / Harvey on v64") &&
-  shellOut.includes("% ") && shellOut.includes("HALATHA-SHELL");
-console.log(`HARVEY-V64-BOOT ${ok ? "PASS" : "FAIL"} ${url}`);
+const ok = text.includes("ASPERA-LIVE READY") && canvas && canvas.nonblack > 1000;
+console.log(`HARVEY-V64-BOOT ${ok ? "PASS" : "FAIL"} ${url} canvas=${JSON.stringify(canvas)}`);
 process.exit(ok ? 0 : 1);

@@ -22,7 +22,7 @@ def main() -> int:
     ap.add_argument("--harvey-repo", default=os.environ.get("HARVEY_REPO", str(HERE.parent.parent.parent / "harvey")))
     ap.add_argument("--out", default=str(HERE.parent.parent / "local/harvey"))
     ap.add_argument("--kernel", default="")
-    ap.add_argument("--init", choices=("halatha", "full", "minimal"), default="halatha")
+    ap.add_argument("--init", choices=("aspera", "halatha", "full", "minimal"), default="aspera")
     args = ap.parse_args()
     repo = Path(args.harvey_repo).resolve()
     out = Path(args.out).resolve()
@@ -42,7 +42,37 @@ def main() -> int:
     for d in DIRS:
         (root / d).mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "README.md", root / "README.md")
-    if args.init == "halatha":
+    if args.init == "aspera":
+        boot = repo / "build/aspera-init"
+        if not boot.is_file():
+            subprocess.run([sys.executable, str(repo / "util/9vm/build_aspera_init.py")], check=True)
+        live = repo / "build/aspera-live-bin"
+        if not live.is_file():
+            subprocess.run([sys.executable, str(repo / "util/9vm/prism.py"),
+                            "build", str(repo / "sys/src/cmd/o9aspera/live.o9"),
+                            "-o", str(live)], check=True)
+        for dest, src in (
+            ("bin/rc", "build/aspera-rc"),
+            ("bin/echo", "build/aspera-echo"),
+            ("bin/test", "build/aspera-test"),
+            ("bin/ls", "build/aspera-ls"),
+            ("bin/cat", "build/aspera-cat"),
+            ("bin/aspera-live", "build/aspera-live-bin"),
+            ("bin/aspera-shelf-service", "build/aspera-live/shelf-service"),
+            ("rc/lib/rcmain", "rc/lib/rcmain"),
+        ):
+            (root / dest).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo / src, root / dest)
+        asbase = root / "build/aspera-live"
+        (asbase / "dev").mkdir(parents=True, exist_ok=True)
+        (asbase / "bin").mkdir(parents=True, exist_ok=True)
+        (asbase / "note.txt").write_text("Hi!\n")
+        (asbase / "notepath").write_text("build/aspera-live/note.txt\n")
+        (asbase / "clock").write_text("00:00\n")
+        for name in ("ctl", "screen0", "screen1", "input"):
+            (asbase / "dev" / name).write_bytes(b"")
+        shutil.copy2(repo / "build/aspera-live-bin", root / "boot/boot")
+    elif args.init == "halatha":
         boot = repo / "build/halatha-init"
         if not boot.is_file():
             subprocess.run([sys.executable, str(repo / "util/9vm/build_halatha_init.py")], check=True)

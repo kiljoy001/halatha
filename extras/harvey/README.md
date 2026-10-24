@@ -7,32 +7,32 @@ keep 9front as a fallback.
 
 ## Current milestone
 
-The v64 page boots the **Halatha shell userland** on Harvey:
+The v64 page boots **Aspera** on Harvey and presents its 1024x768 frame in the
+browser canvas:
 
 ```
-Halatha / Harvey on v64
-halatha: starting /bin/rc
-% echo HALATHA-SHELL
-HALATHA-SHELL
-%
+Halatha / Aspera on Harvey v64
+halatha: starting /bin/aspera-live
+ASPERA-LIVE READY
 ```
 
-The root is served by `extras/harvey/js9p2000.js`; v64's built-in basefs is
-9P2000.L, but Harvey's `#9` is 9P2000, so the raw virtio-9p handler is used.
-The boot path is:
+The guest writes frames through the writable `/build/aspera-live/dev/` files
+on the 9P root. `js9p2000.js` accepts `Twrite` for `screen0`/`screen1` and
+`ctl`, converts XRGB to canvas RGBA, and paints on `commit`.
 
-- Harvey kernel: x86_64, ACPI, PCI, `#I`, `#l0`, `#9`.
-- read-only 9P2000 root over virtio-9p.
-- `boot/halatha_init.o9` binds `/dev`, `/proc`, `/srv`, `/env`.
-- `/bin/rc` reads `/rc/lib/rcmain` and runs the serial shell.
+The shell remains available with:
 
-`mkroot.py` stages `rc`, `echo`, `test`, `ls`, `cat` and `rcmain` into the root.
-The page provides a serial input line for the shell.
+```sh
+HARVEY_REPO=../harvey python3 extras/harvey/mkroot.py --init halatha --out local/harvey
+```
 
-## Remaining
+## Current limits
 
-Writable storage, the virtio-net link, and the graphical Halatha/Aspera layer.
-The shell path is the first product userland; it does not use 9front.
+- The Aspera shelf/note/input paths are disabled in this first display path;
+  the desktop renders, but mouse/keyboard records and the shelf service still
+  need wiring.
+- The 9P root is writable only for the `build/aspera-live/dev` files.
+- Storage and virtio-net are still read-only/experimental.
 
 ## Build a diagnostic root
 

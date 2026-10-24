@@ -56,7 +56,7 @@ class NineP2000 {
     if (n.dir) for (const c of Object.values(n.children)) this.assign(c);
   }
 
-  addFile(path, data) {
+  addFile(path, data, writable = false, onWrite = null) {
     const parts = path.split("/").filter(Boolean);
     let n = this.root;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -68,7 +68,8 @@ class NineP2000 {
       n = n.children[parts[i]];
     }
     const name = parts[parts.length - 1];
-    n.children[name] = { name, dir: false, data: new Uint8Array(data) };
+    n.children[name] = { name, dir: false, data: new Uint8Array(data),
+      writable, onWrite, fullPath: path };
     this.assign(n.children[name]);
   }
 
@@ -148,9 +149,11 @@ class NineP2000 {
       const mode = d.getUint8(p);
       const f = this.fids.get(fid);
       if (!f) { err("unknown fid"); return; }
-      // OREAD=0 and OEXEC=3 both only read; OWRITE/ORDWR need a writable root.
+      // OREAD=0/OEXEC=3 read; OWRITE/ORDWR require a file marked writable.
       const access = mode & 3;
-      if (!f.node.dir && access !== 0 && access !== 3) { err("read only"); return; }
+      const write = access === 1 || access === 2;
+      if (!f.node.dir && write && !f.node.writable) { err("read only"); return; }
+      if (!f.node.dir && access === 2 && !f.node.writable) { err("read only"); return; }
       f.open = true;
       this.send(reply, Ropen, tag, cat(this.qidBytes(this.qid(f.node)), u32(0)));
       return;
@@ -168,6 +171,25 @@ class NineP2000 {
       }
       // Directory read is not needed by the current boot path; return EOF.
       this.send(reply, Rread, tag, u32(0));
+      return;
+    }
+    if (type === Twrite) {
+      const fid = d.getUint32(p, true); p += 4;
+      const off = Number(d.getBigUint64(p, true)); p += 8;
+      const count = d.getUint32(p, true); p += 4;
+      const payload = req.subarray(p, p + count);
+      const f = this.fids.get(fid);
+      if (!f) { err("unknown fid"); return; }
+      if (!f.node.writable) { err("read only"); return; }
+      const need = off + count;
+      if (need > f.node.data.length) {
+        const grown = new Uint8Array(need);
+        grown.set(f.node.data);
+        f.node.data = grown;
+      }
+      f.node.data.set(payload, off);
+      if (f.node.onWrite) f.node.onWrite(f.node, off, payload);
+      this.send(reply, Rwrite, tag, u32(count));
       return;
     }
     if (type === Tclunk) {
