@@ -69,6 +69,21 @@ and `SRV=` records; see [EMERCOIN.md](../../extras/9front/EMERCOIN.md) for
 the bootstrap, secstore/dp9ik and the read-only allowlist that the
 `emercoin9p` `ctl` needs before it is exposed beyond the node.
 
+The babyfs request interface is reachable by name once its NVS record
+exists:
+
+```sh
+9pmount '9p+tcp://babyfileserver.rentonsoftworks.coin!17026/' /n/baby
+cat /n/baby/status
+# No request submitted. Administrator approval is required.
+```
+
+A root attach is the empty aname; `9pmount` uses the three-argument
+`srv -nq` form for it (the request service rejects an explicit `/` aname).
+For a non-root aname it posts with `srv` and mounts with the attach name.
+The private export on `:564` uses `?auth=factotum`, not the default
+unauthenticated request path.
+
 ## IL over Yggdrasil notes
 
 - The kernel must have `il` and `pktmedium`. The guest image is built with

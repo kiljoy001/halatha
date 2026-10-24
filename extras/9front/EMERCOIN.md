@@ -53,6 +53,39 @@ made first and `cs` is restarted; in production mount the namespace **before**
 starting `ndb/cs` (or restart `cs` after the mount). The `cs` protocol itself
 did not change; only the `.coin` lookup was added.
 
+## The 9pmount + babyfs path
+
+The same `.coin` resolver reaches real services. `babyfileserver.rentonsoftworks.coin`
+has the NVS record:
+
+```text
+AAAA=200:f359:ca2b:6a10:e30c:e663:6bd7:363d
+```
+
+with DNS disabled and only the `cs` 9P lookup available:
+
+```rc
+9pmount '9p+tcp://babyfileserver.rentonsoftworks.coin!17026/' /n/baby
+cat /n/baby/status
+```
+
+returned:
+
+```text
+No request submitted. Administrator approval is required.
+```
+
+That is the babyfs PKI request interface. The `.coin` name resolved through
+Emercoin NVS, the dial went to the Yggdrasil address over TCP, and the 9P
+request service answered. A root attach is an empty aname; the explicit `/`
+aname is rejected by the request service, so `9pmount` now uses `srv -nq`
+with three arguments for a root mount and only uses the separate
+`srv`/`mount` form for a non-root aname.
+
+The private export on `:564` is the authenticated side; use the normal
+factotum path (`?auth=factotum`) and the enrolled client key. The request
+endpoint remains unauthenticated and write-limited.
+
 ## Bootstrap
 
 The `.coin` records point at Yggdrasil addresses, but the Emercoin node

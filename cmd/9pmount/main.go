@@ -78,6 +78,19 @@ func main() {
 		if *verbose {
 			fmt.Fprintf(os.Stderr, "9pmount: %s -> %s (srv %s)\n", u.Raw, u.DialString(), svc)
 		}
+		// A root attach is the empty aname.  srv(1) with three arguments
+		// posts and mounts in one step, which is what the babyfs request
+		// service expects (it rejects an explicit "/" aname).  A non-root
+		// aname needs the separate srv + mount form.
+		if u.Aname == "" || u.Aname == "/" {
+			args := []string{}
+			if u.NoAuth() {
+				args = append(args, "-n")
+			}
+			args = append(args, "-q", u.DialString(), svc, mnt)
+			run(*dry, "/bin/srv", args...)
+			return
+		}
 		// Two arguments: post the connection under /srv/<svc> without
 		// mounting. mount(1) below supplies the attach name.
 		run(*dry, "/bin/srv", u.DialString(), svc)
