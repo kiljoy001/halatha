@@ -1,0 +1,12 @@
+#!/bin/rc
+# emercoin-test.rc - mount the emercoin9p namespace and query an NVS record.
+# Run on 9front.  Replace the dial string with the Emercoin node's
+# Yggdrasil address and the emercoin9p port (the test used an SSH tunnel
+# to the node and 10.0.2.2:5641).
+if(! test -d /n/emercoin)
+	mkdir -p /n/emercoin
+if(! test -e /srv/emercoin)
+	srv -nq 'tcp!10.0.2.2!5641' emercoin /n/emercoin
+echo 'name_show dns:halatha.rentonsoftworks.coin' > /n/emercoin/ctl
+cat /n/emercoin/status
+cat /n/emercoin/data

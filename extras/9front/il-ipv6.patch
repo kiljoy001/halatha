@@ -1076,10 +1076,19 @@ index d6db1d44b..9384eb59a 100644
  	psource = nhgets(h->ilsrc);
  
 diff --git a/sys/src/cmd/ndb/cs.c b/sys/src/cmd/ndb/cs.c
-index 4dcb644ab..24e63b6b6 100644
+index 4dcb644ab..ac47367c5 100644
 --- a/sys/src/cmd/ndb/cs.c
 +++ b/sys/src/cmd/ndb/cs.c
-@@ -163,9 +163,9 @@ enum {
+@@ -138,6 +138,8 @@ char*		telcotrans(Ndbtuple*, Network*, char*, char*, int);
+ 
+ Ndbtuple*	dnsiplookup(char*, Ndbs*, int);
+ Ndbtuple*	myipinfo(Ndb *db, char **list, int n);
++static Ndbtuple*	coinlookup(Network*, char*);
++static int	iscoin(char*);
+ 
+ struct Network
+ {
+@@ -163,9 +165,9 @@ enum {
   *  net doesn't apply to (r)udp, icmp(v6), or telco (for speed).
   */
  Network network[] = {
@@ -1091,3 +1100,118 @@ index 4dcb644ab..24e63b6b6 100644
  	{ "udp",	iplookup,	iptrans,	1, 0, V4|V6,	},
  	{ "icmp",	iplookup,	iptrans,	1, 0, V4,	},
  	{ "icmpv6",	iplookup,	iptrans,	1, 0, V6,	},
+@@ -1445,6 +1447,96 @@ ndbline(Ndbtuple *t)
+ 	return t;
+ }
+ 
++/*
++ *  Emercoin NVS DNS records through the user-space emercoin 9P
++ *  namespace.  The server's data file is the JSON returned by
++ *  name_show; its value is a set of key=value records such as
++ *  "AAAA=201:...;TXT=...".
++ */
++#define CoinMnt "/n/emercoin"
++
++static int
++iscoin(char *host)
++{
++	int n;
++
++	n = strlen(host);
++	return n > 5 && strcmp(host+n-5, ".coin") == 0;
++}
++
++static Ndbtuple*
++coinlookup(Network *np, char *host)
++{
++	char cmd[512], buf[16384], *p, *q, *val, *tok, *next, *a;
++	int fd, n, total;
++	Ndbtuple *t;
++
++	USED(np);
++	snprint(cmd, sizeof cmd, "name_show dns:%s\n", host);
++	fd = open(CoinMnt "/ctl", OWRITE);
++	if(fd < 0)
++		return nil;
++	n = write(fd, cmd, strlen(cmd));
++	close(fd);
++	if(n != strlen(cmd))
++		return nil;
++
++	fd = open(CoinMnt "/data", OREAD);
++	if(fd < 0)
++		return nil;
++	total = 0;
++	while(total < sizeof(buf)-1 && (n = read(fd, buf+total, sizeof(buf)-1-total)) > 0)
++		total += n;
++	close(fd);
++	buf[total] = 0;
++
++	p = strstr(buf, "\"value\":\"");
++	if(p == nil)
++		return nil;
++	p += strlen("\"value\":\"");
++	val = p;
++	q = p;
++	while(*p != 0 && *p != '"'){
++		if(*p == '\\' && p[1] != 0)
++			p++;
++		*q++ = *p++;
++	}
++	*q = 0;
++
++	t = nil;
++	for(tok = val; tok != nil && *tok != 0; tok = next){
++		while(*tok == ';' || *tok == '\n' || *tok == ' ' || *tok == '\t')
++			tok++;
++		if(*tok == 0)
++			break;
++		next = strpbrk(tok, ";\n");
++		if(next != nil)
++			*next++ = 0;
++
++		a = strchr(tok, '=');
++		if(a == nil)
++			continue;
++		*a++ = 0;
++		while(*a == ' ' || *a == '\t')
++			a++;
++		q = a + strlen(a);
++		while(q > a && (q[-1] == ' ' || q[-1] == '\t'))
++			*--q = 0;
++		if(*a == 0)
++			continue;
++
++		if(strcmp(tok, "A") == 0 || strcmp(tok, "AAAA") == 0)
++			t = ndbconcatenate(t, ndbnew("ip", a));
++		else if(strcmp(tok, "TXT") == 0)
++			t = ndbconcatenate(t, ndbnew("txt", a));
++		else if(strcmp(tok, "SRV") == 0)
++			t = ndbconcatenate(t, ndbnew("srv", a));
++	}
++	if(t == nil)
++		return nil;
++	return ndbline(t);
++}
++
+ /*
+  *  lookup an ip destination
+  */
+@@ -1477,6 +1569,17 @@ iplookuphost(Network *np, char *host)
+ 	if(strcmp("::", host) == 0)
+ 		return ndbline(ndbnew("ip", "*"));
+ 
++	/*
++	 *  Emercoin NVS names: ask the user-space emercoin 9P
++	 *  namespace first.  If it is not mounted, fall through to
++	 *  the normal DNS/ndb path.
++	 */
++	if(iscoin(host)){
++		t = coinlookup(np, host);
++		if(t != nil)
++			return t;
++	}
++
+ 	/*
+ 	 *  just accept addresses
+ 	 */

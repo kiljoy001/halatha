@@ -51,6 +51,24 @@ go test ./internal/ninepuri
 `mk9frontimg.py` installs `local/9pmount.386` as `/386/bin/9pmount` when
 `NINEPMOUNT_BIN` (or the default path) exists.
 
+## `.coin` names through Emercoin
+
+Once `/n/emercoin` is mounted from the `emercoin9p` service and `cs` has the
+`coinlookup` patch, a `.coin` name is an ordinary host name:
+
+```sh
+9pmount '9p+il://halatha.rentonsoftworks.coin!17026/' /n/target
+9pmount '9p+tcp://emercoin!5640/?auth=factotum' /n/emercoin
+```
+
+`cs` resolves the `.coin` name through the 9P namespace, returns the
+Yggdrasil IPv6 address, and the selected transport (`il` or `tcp`) dials it.
+The `/n/emercoin` mount must exist before `ndb/cs` starts, or `cs` must be
+restarted after the mount. The `coinlookup` handles `A=`, `AAAA=`, `TXT=`
+and `SRV=` records; see [EMERCOIN.md](../../extras/9front/EMERCOIN.md) for
+the bootstrap, secstore/dp9ik and the read-only allowlist that the
+`emercoin9p` `ctl` needs before it is exposed beyond the node.
+
 ## IL over Yggdrasil notes
 
 - The kernel must have `il` and `pktmedium`. The guest image is built with
