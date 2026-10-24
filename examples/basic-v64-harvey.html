@@ -113,6 +113,11 @@ aspInput.addEventListener("mousedown", (e) => {
   window.sendAspera("down " + x + " " + y + "\n");
 });
 window.addEventListener("mouseup", () => { down = false; window.sendAspera("up\n"); });
+window.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  window.sendAspera("key " + e.keyCode + " 0\n");
+  if (e.key.length === 1) e.preventDefault();
+});
 for (const ev of ["emulator-ready", "emulator-loaded", "emulator-started", "emulator-stopped", "emulator-error"]) {
   vm.add_listener(ev, (x) => log("\n[" + ev + "]" + (x && x.message ? " " + x.message : "") + "\n"));
 }
