@@ -16,12 +16,13 @@ const started = Date.now();
 let text = "";
 while (Date.now() - started < timeout) {
   text = await page.evaluate(() => document.getElementById("serial")?.textContent || "");
-  if (text.includes("HALATHA:") || text.includes("panic:")) break;
+  if (text.includes("HALATHA: entering idle") || text.includes("panic:")) break;
   await page.waitForTimeout(500);
 }
 await browser.close();
 console.log(text.split("\n").slice(-30).join("\n"));
 for (const e of errors) console.log("page error:", e);
-const ok = text.includes("Harvey") && text.includes("HALATHA: Harvey userland on v64");
+const ok = text.includes("Harvey") && text.includes("HALATHA: Harvey userland on v64") &&
+  text.includes("HALATHA: root read");
 console.log(`HARVEY-V64-BOOT ${ok ? "PASS" : "FAIL"} ${url}`);
 process.exit(ok ? 0 : 1);

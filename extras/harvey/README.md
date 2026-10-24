@@ -18,6 +18,8 @@ reaches:
 #l0: virtio: 1000Mbps ...
 init: mounting #9/0 to /...
 HALATHA: Harvey userland on v64
+HALATHA: root read 22: Harvey on Halatha/v64
+HALATHA: entering idle
 ```
 
 The 9P root is served by `extras/harvey/js9p2000.js`. v64's built-in basefs
