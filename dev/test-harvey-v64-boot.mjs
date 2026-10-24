@@ -32,6 +32,6 @@ const canvas = await page.evaluate(() => {
 await browser.close();
 console.log(text.split("\n").slice(-30).join("\n"));
 for (const e of errors) console.log("page error:", e);
-const ok = text.includes("ASPERA-LIVE READY") && canvas && canvas.nonblack > 1000;
+const ok = text.includes("ASPERA-LIVE READY") && canvas && canvas.nonblack > 100000;
 console.log(`HARVEY-V64-BOOT ${ok ? "PASS" : "FAIL"} ${url} canvas=${JSON.stringify(canvas)}`);
 process.exit(ok ? 0 : 1);

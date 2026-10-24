@@ -42,18 +42,20 @@ function ctlWrite(node, off, data) {
   if (/commit/.test(text)) drawSlot(activeSlot);
 }
 function screenWrite(node, off, data) {
-  // Delta tile: 8-byte x/y/w/h header followed by 32x16 pixels.
-  if (data.length >= 8 && data.length !== 1024 * 768 * 4) {
+  // Delta tile: 8-byte x/y/w/h header followed by exactly w*h pixels.
+  if (data.length >= 8) {
     const x = data[0] | (data[1] << 8);
     const y = data[2] | (data[3] << 8);
     const w = data[4] | (data[5] << 8);
     const h = data[6] | (data[7] << 8);
-    const px = data.subarray(8);
-    const dst = frameSlots[activeSlot];
-    for (let row = 0; row < h; row++)
-      dst.set(px.subarray(row * w * 4, (row + 1) * w * 4),
-              ((y + row) * 1024 + x) * 4);
-    return;
+    if (w > 0 && h > 0 && w <= 1024 && h <= 768 && 8 + w * h * 4 === data.length) {
+      const px = data.subarray(8);
+      const dst = frameSlots[activeSlot];
+      for (let row = 0; row < h; row++)
+        dst.set(px.subarray(row * w * 4, (row + 1) * w * 4),
+                ((y + row) * 1024 + x) * 4);
+      return;
+    }
   }
   frameSlots[activeSlot].set(data.subarray(0, Math.min(data.length, frameSlots[activeSlot].length)), off);
 }
