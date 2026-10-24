@@ -15,7 +15,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE / "tools"
-DIRS = ("amd64/bin", "bin", "boot", "dev", "env", "net", "n/host", "proc", "srv")
+DIRS = ("amd64/bin", "bin", "boot", "dev", "env", "mnt", "net", "n/host", "proc", "srv")
 
 def main() -> int:
     ap = argparse.ArgumentParser()

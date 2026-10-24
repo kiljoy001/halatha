@@ -38,6 +38,7 @@ function makeRoot() {
     env: dir("env"),
     net: dir("net"),
     n: dir("n", { host: dir("host") }),
+    mnt: dir("mnt"),
     proc: dir("proc"),
     srv: dir("srv"),
   });
@@ -94,7 +95,7 @@ class NineP2000 {
     }
     const name = parts[parts.length - 1];
     n.children[name] = { name, dir: false, data: new Uint8Array(data),
-      writable, onWrite, fullPath: path };
+      writable, onWrite, fullPath: path, mode: 0o444 };
     this.assign(n.children[name]);
   }
 
@@ -200,8 +201,41 @@ class NineP2000 {
         this.send(reply, Rread, tag, cat(u32(data.length), data));
         return;
       }
-      // Directory read is not needed by the current boot path; return EOF.
-      this.send(reply, Rread, tag, u32(0));
+      const parts = Object.values(f.node.children).map((n) => this.stat(n));
+      const all = cat(...parts);
+      const data = all.subarray(off, Math.min(all.length, off + count));
+      this.send(reply, Rread, tag, cat(u32(data.length), data));
+      return;
+    }
+    if (type === Tcreate) {
+      const fid = d.getUint32(p, true); p += 4;
+      const name = str();
+      const perm = d.getUint32(p, true); p += 4;
+      const mode = d.getUint8(p); p += 1;
+      const f = this.fids.get(fid);
+      if (!f || !f.node.dir) { err("bad create fid"); return; }
+      if (f.node.children[name]) { err("file exists"); return; }
+      const isdir = (perm & DMDIR) !== 0;
+      const node = isdir ? dir(name) : { name, dir: false, data: new Uint8Array(0),
+        writable: true, fullPath: (f.node.fullPath || "") + "/" + name,
+        mode: perm & 0o777 };
+      this.assign(node);
+      f.node.children[name] = node;
+      this.fids.set(fid, { node, open: true });
+      const q = this.qid(node);
+      this.send(reply, Rcreate, tag, cat(this.qidBytes(q), u32(0)));
+      return;
+    }
+    if (type === Tremove) {
+      const fid = d.getUint32(p, true); p += 4;
+      const f = this.fids.get(fid);
+      if (!f) { err("unknown fid"); return; }
+      const parent = this.parent(f.node);
+      if (!parent) { err("cannot remove root"); return; }
+      if (f.node.dir && Object.keys(f.node.children).length) { err("directory not empty"); return; }
+      delete parent.children[f.node.name];
+      this.fids.delete(fid);
+      this.send(reply, Rremove, tag);
       return;
     }
     if (type === Twrite) {
