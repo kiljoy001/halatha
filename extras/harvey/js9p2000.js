@@ -56,6 +56,31 @@ class NineP2000 {
     if (n.dir) for (const c of Object.values(n.children)) this.assign(c);
   }
 
+  setConsume(path) {
+    const n = this.find(path);
+    if (n) n.consume = true;
+  }
+
+  find(path) {
+    const parts = path.split("/").filter(Boolean);
+    let n = this.root;
+    for (const part of parts) {
+      if (!n || !n.dir || !n.children[part]) return null;
+      n = n.children[part];
+    }
+    return n;
+  }
+
+  writeFile(path, data) {
+    const n = this.find(path);
+    if (!n || n.dir) return false;
+    const add = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+    const out = new Uint8Array(n.data.length + add.length);
+    out.set(n.data); out.set(add, n.data.length);
+    n.data = out;
+    return true;
+  }
+
   addFile(path, data, writable = false, onWrite = null) {
     const parts = path.split("/").filter(Boolean);
     let n = this.root;
@@ -165,7 +190,13 @@ class NineP2000 {
       const f = this.fids.get(fid);
       if (!f || !f.open) { err("not open"); return; }
       if (!f.node.dir) {
-        const data = f.node.data.subarray(off, Math.min(f.node.data.length, off + count));
+        let data;
+        if (f.node.consume) {
+          data = f.node.data.subarray(0, Math.min(f.node.data.length, count));
+          f.node.data = f.node.data.subarray(data.length);
+        } else {
+          data = f.node.data.subarray(off, Math.min(f.node.data.length, off + count));
+        }
         this.send(reply, Rread, tag, cat(u32(data.length), data));
         return;
       }

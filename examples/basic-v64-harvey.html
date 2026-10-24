@@ -64,6 +64,7 @@ for (const slot of [0, 1]) {
 }
 p9.addFile("build/aspera-live/dev/ctl", new Uint8Array(0), true, ctlWrite);
 p9.addFile("build/aspera-live/dev/input", new Uint8Array(0), true);
+p9.setConsume("build/aspera-live/dev/input");
 for (const f of ["boot/boot", "boot/init", "bin/rc", "bin/echo", "bin/test", "bin/ls", "bin/cat", "bin/aspera-live", "bin/aspera-shelf-service", "rc/lib/rcmain", "build/aspera-live/notepath", "build/aspera-live/clock", "build/aspera-live/note.txt"]) {
   try {
     const r = await fetch("../local/harvey/rootfs/" + f);
@@ -95,6 +96,23 @@ const vm = new V86({
   disable_speaker: true,
 });
 window.emulator = vm;
+window.sendAspera = (s) => p9.writeFile("build/aspera-live/dev/input", s);
+const aspInput = document.getElementById("aspera");
+let down = false;
+aspInput.addEventListener("mousemove", (e) => {
+  const r = aspInput.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1023, Math.floor((e.clientX - r.left) * 1024 / r.width)));
+  const y = Math.max(0, Math.min(767, Math.floor((e.clientY - r.top) * 768 / r.height)));
+  window.sendAspera((down ? "move " : "move ") + x + " " + y + "\n");
+});
+aspInput.addEventListener("mousedown", (e) => {
+  const r = aspInput.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) * 1024 / r.width);
+  const y = Math.floor((e.clientY - r.top) * 768 / r.height);
+  down = true;
+  window.sendAspera("down " + x + " " + y + "\n");
+});
+window.addEventListener("mouseup", () => { down = false; window.sendAspera("up\n"); });
 for (const ev of ["emulator-ready", "emulator-loaded", "emulator-started", "emulator-stopped", "emulator-error"]) {
   vm.add_listener(ev, (x) => log("\n[" + ev + "]" + (x && x.message ? " " + x.message : "") + "\n"));
 }
