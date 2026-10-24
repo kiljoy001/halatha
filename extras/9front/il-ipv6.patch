@@ -1076,7 +1076,7 @@ index d6db1d44b..9384eb59a 100644
  	psource = nhgets(h->ilsrc);
  
 diff --git a/sys/src/cmd/ndb/cs.c b/sys/src/cmd/ndb/cs.c
-index 4dcb644ab..ac47367c5 100644
+index 4dcb644ab..cbe319df6 100644
 --- a/sys/src/cmd/ndb/cs.c
 +++ b/sys/src/cmd/ndb/cs.c
 @@ -138,6 +138,8 @@ char*		telcotrans(Ndbtuple*, Network*, char*, char*, int);
@@ -1130,7 +1130,7 @@ index 4dcb644ab..ac47367c5 100644
 +
 +	USED(np);
 +	snprint(cmd, sizeof cmd, "name_show dns:%s\n", host);
-+	fd = open(CoinMnt "/ctl", OWRITE);
++	fd = open(CoinMnt "/ctl", OTRUNC|OWRITE);
 +	if(fd < 0)
 +		return nil;
 +	n = write(fd, cmd, strlen(cmd));

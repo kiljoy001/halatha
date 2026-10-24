@@ -169,3 +169,75 @@ The gateway is then a convenience, not the trust anchor.
 The `babyfs` PKI gate is independent of this naming layer: a `.coin` record
 can point at the gate's Yggdrasil address, and the normal `Tauth`/Ed25519
 path still runs over the selected transport (IL included).
+
+## Allowlist (implemented)
+
+`emercoin9p` now defaults `NewNsFromEnv` to a read-only command set:
+
+```text
+name_show,name_scan,getblockheader,getrawtransaction,getblockhash,getblock
+```
+
+`EMC_ALLOW_COMMANDS` overrides the list; `all` or `*` restores the old
+unrestricted behavior. `getbalance`, `sendtoaddress`, `getinfo` and the
+other wallet commands are rejected before the RPC backend. The test server
+on the Emercoin node is the `emercoin9p-allow` binary at
+`127.0.0.1:5640`, reached through an SSH tunnel; it was never bound to the
+Yggdrasil address. `cs` truncates `/n/emercoin/ctl` with `OTRUNC` before
+each query, so a shorter command cannot inherit the tail of the previous
+one.
+
+The allowlist commit is `3b30dc3` on `kiljoy001/emercoin-9p`
+(`feature/docker-k8s`). The 9front pieces are `215d60e5a` (coin lookup) and
+`35435fbed` (ctl truncation), with `66910429e` for the IL changes.
+
+## Test service
+
+The node `rentonsoftworks.coin` runs `emercoind` with RPC on
+`127.0.0.1:6662`; `emercoin9p-allow` serves the 9P namespace on
+`127.0.0.1:5640`. The Plan 9 test reaches it through an SSH tunnel as
+`10.0.2.2:5641`. In production, bind the node's Yggdrasil address, enable
+`EMC_9FRONT_AUTH_*` (dp9ik), and mount with factotum/secstore:
+
+```rc
+9pmount '9p+tcp://emercoin!5640/?auth=factotum' /n/emercoin
+```
+
+then start/restart `cs` so it inherits the mount. The `.coin` records then
+resolve through `cs`; target services use `9pmount` with `il` or `tcp`.
+
+## The grid, end to end
+
+- **Naming**: Emercoin NVS `dns:` records (`AAAA=`, `A=`, `TXT=`, `SRV=`)
+  hold Yggdrasil addresses and service metadata; `halatha` is
+  `201:dd03:...`, `babyfileserver` is `200:f359:...`.
+- **Bootstrap**: `ndb` has the Emercoin node's Yggdrasil address; the 9P
+  namespace is mounted before `cs` or `cs` is restarted.
+- **Resolution**: the `cs` `coinlookup` queries `/n/emercoin` and returns
+  `ip` tuples; DNS is only a fallback. With DNS disabled, both
+  `tcp!halatha...!443` and `il!halatha...!17026` resolve to
+  `201:dd03:...`.
+- **Transport**: the record's Yggdrasil IPv6 address is dialed directly;
+  IL is used when the target 9P service supports it, otherwise TCP over
+  Yggdrasil.
+- **Authentication**: secstore/factotum + dp9ik for the `emercoin9p` mount
+  and for target 9P services; the babyfs PKI keeps its Tauth/Ed25519 and
+  Yggdrasil-source binding.
+- **Trust**: the NVS reply carries `txid`/`vout`; the `merkle.go` library
+  and `stepca-9p` client can verify the record against the block Merkle
+  root. The gateway is a convenience, not the trust anchor.
+- **Local state**: `ndb` is the bootstrap/cache; `cs` is the live resolver;
+  `secstore` holds the keys; `9pmount` is the user-space URI/mount helper.
+
+The live web UI still uses `halatha.rentonsoftworks.com` over the
+Yggdrasil address; `.coin` lacks a matching Caddy certificate. The `.coin`
+name is the naming/9P layer, not a certificate name.
+
+## Images
+
+`local/9front-halatha-il-cs.img` is the 9front image with the improved IL,
+the `cs` `.coin` lookup and `9pmount` with the root-aname fix. The earlier
+`-cs-v1`/`-cs-v2` images are development snapshots. The live page can boot
+the new image with `?iso=/local/9front-halatha-il-cs.img&size=2147483648`;
+the `/n/emercoin` mount and the production node address still need to be
+added to the boot hook before `.coin` resolution is live in the browser.
