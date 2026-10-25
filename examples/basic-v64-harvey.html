@@ -65,7 +65,7 @@ for (const slot of [0, 1]) {
 p9.addFile("build/aspera-live/dev/ctl", new Uint8Array(0), true, ctlWrite);
 p9.addFile("build/aspera-live/dev/input", new Uint8Array(0), true);
 p9.setConsume("build/aspera-live/dev/input");
-for (const f of ["boot/boot", "boot/init", "bin/rc", "bin/echo", "bin/test", "bin/ls", "bin/cat", "bin/aspera-live", "bin/aspera-shelf-service", "rc/lib/rcmain", "build/aspera-live/notepath", "build/aspera-live/clock", "build/aspera-live/note.txt"]) {
+for (const f of ["boot/boot", "boot/init", "bin/rc", "bin/echo", "bin/test", "bin/ls", "bin/cat", "bin/aspera-live", "bin/aspera-shelf-service", "build/aspera-live/shelf-service", "rc/lib/rcmain", "build/aspera-live/notepath", "build/aspera-live/clock", "build/aspera-live/note.txt"]) {
   try {
     const r = await fetch("../local/harvey/rootfs/" + f);
     if (r.ok) p9.addFile(f, await r.arrayBuffer(), f.endsWith("note.txt"));

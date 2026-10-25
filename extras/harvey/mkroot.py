@@ -67,6 +67,7 @@ def main() -> int:
         (asbase / "dev").mkdir(parents=True, exist_ok=True)
         (asbase / "bin").mkdir(parents=True, exist_ok=True)
         (asbase / "note.txt").write_text("Hi!\n")
+        shutil.copy2(repo / "build/aspera-live/shelf-service", asbase / "shelf-service")
         (asbase / "notepath").write_text("build/aspera-live/note.txt\n")
         (asbase / "clock").write_text("00:00\n")
         for name in ("ctl", "screen0", "screen1", "input"):
