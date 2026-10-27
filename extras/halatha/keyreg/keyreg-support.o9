@@ -1,0 +1,247 @@
+// Public-key validation and fixed-argument administrator commands.
+function KeyRegValidRaw(string value) bool {
+    bool out;
+    c {
+        char *s;
+        int i;
+        out = 0;
+        s = o9_string_cstr(value);
+        if(s != nil && strlen(s) == 64){
+            out = 1;
+            for(i = 0; i < 64; i++)
+                if(!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
+                    out = 0;
+        }
+        free(s);
+    }
+    return out;
+}
+
+function KeyRegCommandRaw(int64 action, string client, string transport) string {
+    string out;
+    c {
+        char *key, *via, *buf, tmp[1024];
+        int p[2], pid, n, len, ok, valid, i;
+        Waitmsg *w;
+        out = o9_string_from_c("ERROR\nUnable to start administrator command.");
+        key = o9_string_cstr(client);
+        via = o9_string_cstr(transport);
+        valid = action >= 0 && action <= 5;
+        if(action > 0 && action <= 3){
+            if(key == nil || strlen(key) != 64) valid = 0;
+            else for(i = 0; i < 64; i++)
+                if(!((key[i] >= '0' && key[i] <= '9') || (key[i] >= 'a' && key[i] <= 'f'))) valid = 0;
+        }
+        if(action == 1 || action == 3){
+            if(via == nil || strlen(via) != 64) valid = 0;
+            else for(i = 0; i < 64; i++)
+                if(!((via[i] >= '0' && via[i] <= '9') || (via[i] >= 'a' && via[i] <= 'f'))) valid = 0;
+        }
+        if(action == 5){
+            if(key == nil || strlen(key) != 32) valid = 0;
+            else for(i = 0; i < 32; i++)
+                if(!((key[i] >= '0' && key[i] <= '9') || (key[i] >= 'a' && key[i] <= 'f'))) valid = 0;
+        }
+        if(valid && pipe(p) == 0){
+            pid = rfork(RFPROC|RFFDG|RFNOTEG);
+            if(pid == 0){
+                close(p[0]);
+                dup(p[1], 1);
+                dup(p[1], 2);
+                close(p[1]);
+                if(action == 0)
+                    execl("/usr/scott/bin/amd64/ygg9p", "ygg9p", "-config", "/usr/scott/lib/ygg9p/config.json", "-list", nil);
+                if(action == 1)
+                    execl("/usr/scott/bin/rc/ygg9p-enroll", "ygg9p-enroll", key, via, nil);
+                if(action == 2)
+                    execl("/usr/scott/bin/amd64/ygg9p", "ygg9p", "-config", "/usr/scott/lib/ygg9p/config.json", "-revoke", key, nil);
+                if(action == 3)
+                    execl("/usr/scott/bin/amd64/ygg9p", "ygg9p", "-config", "/usr/scott/lib/ygg9p/config.json", "-set-transport", key, "-transport-key", via, nil);
+                if(action == 4)
+                    execl("/usr/scott/bin/amd64/ygg9p", "ygg9p", "-config", "/usr/scott/lib/ygg9p/config.json", "-pending", nil);
+                if(action == 5)
+                    execl("/usr/scott/bin/amd64/ygg9p", "ygg9p", "-config", "/usr/scott/lib/ygg9p/config.json", "-resolve-request", key, nil);
+                exits("command unavailable");
+            }
+            close(p[1]);
+            len = 0;
+            buf = malloc(65537);
+            while((n = read(p[0], tmp, sizeof tmp)) > 0){
+                if(buf != nil && len + n <= 65536){
+                    memmove(buf + len, tmp, n);
+                    len += n;
+                } else {
+                    len = 65537;
+                }
+            }
+            close(p[0]);
+            ok = 0;
+            if(pid > 0){
+                while((w = wait()) != nil){
+                    if(w->pid == pid){
+                        ok = w->msg == nil || w->msg[0] == 0;
+                        free(w);
+                        break;
+                    }
+                    free(w);
+                }
+            }
+            if(buf != nil && len <= 65536){
+                buf[len] = 0;
+                o9_string_release(out);
+                out = o9_string_new("", 0);
+                {
+                    char *result;
+                    result = smprint("%s\n%s", ok ? "OK" : "ERROR", buf);
+                    o9_string_release(out);
+                    out = o9_string_from_c(result);
+                    free(result);
+                }
+            }
+            free(buf);
+        }
+        free(key);
+        free(via);
+    }
+    return out;
+}
+
+function KeyRegOKRaw(string result) bool {
+    bool out;
+    c {
+        char *s;
+        s = o9_string_cstr(result);
+        out = s != nil && strncmp(s, "OK\n", 3) == 0;
+        free(s);
+    }
+    return out;
+}
+
+function KeyRegCellRaw(string result, int64 row, int64 col) string {
+    string out;
+    c {
+        char *s, *p, *end;
+        int i;
+        out = o9_string_from_c("");
+        s = o9_string_cstr(result);
+        p = s != nil ? strchr(s, '\n') : nil;
+        if(p != nil && row >= 0 && col >= 0){
+            p++;
+            for(i = 0; i < row && p != nil; i++){
+                p = strchr(p, '\n');
+                if(p != nil) { p++; }
+            }
+            for(i = 0; i < col && p != nil; i++){
+                end = strchr(p, '\n');
+                p = strchr(p, '\t');
+                if(p == nil || (end != nil && p > end)) { p = nil; }
+                if(p != nil) { p++; }
+            }
+            if(p != nil){
+                end = p;
+                while(*end != 0 && *end != '\t' && *end != '\n') end++;
+                o9_string_release(out);
+                out = o9_string_new(p, end - p);
+            }
+        }
+        free(s);
+    }
+    return out;
+}
+
+function KeyRegCountRaw(string result) int64 {
+    int64 out;
+    c {
+        char *s, *p;
+        out = 0;
+        s = o9_string_cstr(result);
+        p = s != nil ? strchr(s, '\n') : nil;
+        if(p != nil){
+            for(p++; *p != 0; p++)
+                if(*p == '\n') { out++; }
+        }
+        free(s);
+    }
+    return out;
+}
+
+function KeyRegShortRaw(string value) string {
+    string out;
+    c {
+        char *s, text[32];
+        s = o9_string_cstr(value);
+        if(s != nil && strlen(s) == 64){
+            snprint(text, sizeof text, "%.12s...%.8s", s, s+56);
+            out = o9_string_from_c(text);
+        } else out = o9_string_from_c(s != nil ? s : "");
+        free(s);
+    }
+    return out;
+}
+
+function KeyRegPasteRaw() string {
+ string out;
+ c {
+  char buf[130], *p, *end;
+  int fd, n, len, valid, i;
+  out = o9_string_from_c("");
+  len = 0;
+  fd = open("/dev/snarf", OREAD);
+  if(fd >= 0){
+   while(len < 129 && (n = read(fd, buf+len, 129-len)) > 0) len += n;
+   close(fd);
+   buf[len] = 0;
+   p = buf;
+   while(*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+   end = buf+len;
+   while(end > p && (end[-1] == ' ' || end[-1] == '\n' || end[-1] == '\r' || end[-1] == '\t')) end--;
+   valid = len < 129 && end-p == 64;
+   if(valid){
+    for(i = 0; i < 64; i++) if(!((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f'))) valid = 0;
+    if(valid){o9_string_release(out);out = o9_string_new(p,64);}
+   }
+   memset(buf,0,sizeof buf);
+  }
+ }
+ return out;
+}
+
+class KeyRegistry {
+ method KeyRegistry() { }
+ method string pasteKey() { Task<string> t = spawn KeyRegPasteRaw(); return t.await(); }
+ method bool valid(string key) { Task<bool> t = spawn KeyRegValidRaw(key); return t.await(); }
+ method string command(int64 action, string key, string transport) { Task<string> t = spawn KeyRegCommandRaw(action, key, transport); return t.await(); }
+ method bool succeeded(string result) { Task<bool> t = spawn KeyRegOKRaw(result); return t.await(); }
+ method string cell(string result, int64 row, int64 col) { Task<string> t = spawn KeyRegCellRaw(result, row, col); return t.await(); }
+ method int64 count(string result) { Task<int64> t = spawn KeyRegCountRaw(result); return t.await(); }
+ method string shortKey(string key) { Task<string> t = spawn KeyRegShortRaw(key); return t.await(); }
+}
+
+class KeyRegistrationReview {
+ KeyRegistry registry;
+    int64 mode;
+    string client;
+    string transport;
+
+    method KeyRegistrationReview() {
+        registry = new KeyRegistry();
+        mode = 0;
+        client = "";
+        transport = "";
+    }
+    method bool prepare(int64 action, string key, string via) {
+        mode = 0;
+        if(!registry.valid(key)) { return false; }
+        if((action == 1 || action == 3) && !registry.valid(via)) { return false; }
+        if(action < 1 || action > 4) { return false; }
+        client = key;
+        transport = via;
+        mode = action;
+        return true;
+    }
+    method void cancel() { mode = 0; }
+    method bool matches(string key, string via) {
+        return mode != 0 && cmp(client, key) == 0 && cmp(transport, via) == 0;
+    }
+    method int64 action() { return mode; }
+}

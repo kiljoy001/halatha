@@ -1,0 +1,80 @@
+import "stdlib/draw.o9";
+import "stdlib/file.o9";
+import "stdlib/string.o9";
+import "client.o9";
+
+main {
+    PublicKeys keys = new PublicKeys();
+    KeyRequestClient remote = new KeyRequestClient();
+    DrawWindow win = new DrawWindow("babyfs access request", 980, 430);
+    DrawLabel title = new DrawLabel("Request babyfs access", 20, 16, 930, 30);
+    DrawLabel policy = new DrawLabel("Submission does not grant access. An administrator must review your request.", 20, 54, 930, 28);
+    DrawLabel keyLabel = new DrawLabel("Your client public key", 20, 96, 730, 24);
+    DrawButton pasteKey = new DrawButton("Paste public key", 770, 90, 180, 30);
+    DrawTextInput key = new DrawTextInput("", 20, 126, 930, 32);
+    DrawLabel viaLabel = new DrawLabel("Your VM Yggdrasil node public key", 20, 170, 730, 24);
+    DrawButton pasteVia = new DrawButton("Paste transport", 770, 164, 180, 30);
+    DrawTextInput via = new DrawTextInput("", 20, 200, 930, 32);
+    DrawButton registration = new DrawButton("Request registration", 20, 248, 220, 34);
+    DrawButton change = new DrawButton("Request transport change", 250, 248, 250, 34);
+    DrawButton submit = new DrawButton("Submit request", 510, 248, 190, 34);
+    DrawButton cancel = new DrawButton("Cancel", 710, 248, 120, 34);
+    DrawScrollText status = new DrawScrollText("Paste a public key. Do not paste private keys or seeds.", 20, 300, 930, 110);
+    File endpointFile = new File("/n/host/boot/babyfs-endpoint");
+    String endpointConfig = new String(endpointFile.read());
+    string endpoint = endpointConfig.trim();
+    string kind;
+    string reviewedKey;
+    string reviewedVia;
+    string pasted;
+    int64 event;
+    int64 oldPasteKey;
+    int64 oldPasteVia;
+    int64 oldRegister;
+    int64 oldChange;
+    int64 oldSubmit;
+    int64 oldCancel;
+    bool running;
+    kind = ""; reviewedKey = ""; reviewedVia = "";
+    oldPasteKey = 0; oldPasteVia = 0; oldRegister = 0; oldChange = 0; oldSubmit = 0; oldCancel = 0;
+    submit.setEnabled(false);
+    win.background(0x203040); win.accent(0xe0c040);
+    win.add(title); win.add(policy); win.add(keyLabel); win.add(pasteKey); win.add(key);
+    win.add(viaLabel); win.add(pasteVia); win.add(via);
+    win.add(registration); win.add(change); win.add(submit); win.add(cancel); win.add(status);
+    if(win.open()) {
+        running = true;
+        while(running) {
+            win.update();
+            event = win.nextEvent();
+            if(event == 2 && win.eventKey() == 0x1B) { running = false; }
+            if(event == 1 || event == 2) {
+                win.routeEvent();
+                if(pasteKey.count() != oldPasteKey) { oldPasteKey = pasteKey.count(); pasted = keys.paste(); if(keys.valid(pasted)) { key.setText(pasted); } }
+                if(pasteVia.count() != oldPasteVia) { oldPasteVia = pasteVia.count(); pasted = keys.paste(); if(keys.valid(pasted)) { via.setText(pasted); } }
+                if(len(kind) > 0 && (cmp(key.text(), reviewedKey) != 0 || cmp(via.text(), reviewedVia) != 0)) {
+                    kind = ""; submit.setEnabled(false); status.setText("Fields changed. Review your request again.");
+                }
+                if(registration.count() != oldRegister || change.count() != oldChange) {
+                    if(change.count() != oldChange) { kind = "change-transport"; } else { kind = "register"; }
+                    oldRegister = registration.count(); oldChange = change.count();
+                    if(keys.valid(key.text()) && keys.valid(via.text())) {
+                        reviewedKey = key.text(); reviewedVia = via.text(); submit.setEnabled(true);
+                        status.setText(cat(cat("Review request: ", kind), "\nClick Submit request. Approval is a separate administrator action."));
+                    } else { kind = ""; submit.setEnabled(false); status.setText("Both public keys must be exactly 64 lowercase hexadecimal characters."); }
+                }
+                if(cancel.count() != oldCancel) { oldCancel = cancel.count(); kind = ""; submit.setEnabled(false); status.setText("Cancelled. No request sent."); }
+                if(submit.count() != oldSubmit) {
+                    oldSubmit = submit.count();
+                    if(len(kind) > 0 && cmp(key.text(), reviewedKey) == 0 && cmp(via.text(), reviewedVia) == 0) {
+                        status.setText("Submitting a proposal to babyfs..."); win.update();
+                        if(len(endpoint) == 0) { status.setText("Request service is not configured on this deployment."); }
+                        else { status.setText(remote.submit(endpoint, kind, reviewedKey, reviewedVia)); }
+                        kind = ""; submit.setEnabled(false);
+                    }
+                }
+            }
+        }
+        win.close();
+    } else { print("keyrequest: run inside rio or graphical drawterm.\n"); }
+}

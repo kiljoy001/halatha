@@ -1,0 +1,41 @@
+import "keyreg-support.o9";
+
+main {
+    KeyRegistry registry = new KeyRegistry();
+    KeyRegistrationReview review = new KeyRegistrationReview();
+    string alice = "bdbacfd82240de3dcd123924cbb55256fb8dab08aa98e305528ab84f419e6efb";
+    string bob = "48bf3da578da211959c44d953867dbf5758d4813ffedbee8321fddd30a5aaf18";
+    string records = cat(cat(cat(cat("OK\n", alice), "\t"), bob), "\tread-write\t1073741824\n");
+    bool ok;
+    ok = review.action() == 0;
+    ok = ok && !review.matches(alice, bob);
+    ok = ok && !review.prepare(1, "!seed=secret", bob);
+    ok = ok && !review.prepare(1, alice, "");
+    ok = ok && review.prepare(1, alice, bob);
+    ok = ok && review.matches(alice, bob);
+    ok = ok && review.matches(cat("", alice), cat("", bob));
+    ok = ok && !review.matches(bob, bob);
+    ok = ok && !review.matches(alice, alice);
+    review.cancel();
+    ok = ok && !review.matches(alice, bob);
+    ok = ok && review.prepare(2, alice, bob);
+    ok = ok && review.action() == 2;
+    review.cancel();
+    ok = ok && review.prepare(3, alice, bob);
+    review.cancel();
+    ok = ok && review.prepare(4, alice, bob);
+    review.cancel();
+    ok = ok && !review.prepare(6, alice, bob);
+    ok = ok && registry.succeeded(records);
+    ok = ok && registry.count(records) == 1;
+    ok = ok && cmp(registry.cell(records, 0, 0), alice) == 0;
+    ok = ok && cmp(registry.cell(records, 0, 1), bob) == 0;
+    ok = ok && cmp(registry.cell(records, 0, 2), "read-write") == 0;
+    ok = ok && cmp(registry.cell(records, 0, 3), "1073741824") == 0;
+    ok = ok && cmp(registry.cell(records, 1, 0), "") == 0;
+    ok = ok && cmp(registry.cell(records, 0, 4), "") == 0;
+    ok = ok && !registry.succeeded(registry.command(1, "bad", bob));
+    ok = ok && !registry.succeeded(registry.command(2, "x; rm /", ""));
+    if(ok) { print("PASS: explicit review, cancellation, field binding, parsing and command validation\n"); }
+    else { print("FAIL: key registration policy\n"); }
+}

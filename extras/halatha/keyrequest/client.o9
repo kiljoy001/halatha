@@ -2,11 +2,56 @@ import "stdlib/net.o9";
 import "stdlib/file.o9";
 import "publickeys.o9";
 
+// The installed 386 Objective-9C stdlib predates NetConn's mount helpers.
+// Use the same Plan 9 dial, mount and unmount calls here for both versions.
+function KeyRequestMountRaw(string endpoint, string dest) int64 {
+    int64 out;
+    c {
+        char *addr, *target;
+        int fd;
+        out = -1;
+        addr = o9_string_cstr(endpoint);
+        target = o9_string_cstr(dest);
+        if(addr != nil && target != nil){
+            fd = dial(addr, nil, nil, nil);
+            if(fd >= 0){
+                if(mount(fd, -1, target, MREPL, "") >= 0)
+                    out = 0;
+                close(fd);
+            }
+        }
+        if(addr != nil) free(addr);
+        if(target != nil) free(target);
+    }
+    return out;
+}
+
+function KeyRequestUnmountRaw(string dest) int64 {
+    int64 out;
+    c {
+        char *target;
+        out = -1;
+        target = o9_string_cstr(dest);
+        if(target != nil){
+            out = unmount(nil, target);
+            free(target);
+        }
+    }
+    return out;
+}
+
 class KeyRequestClient {
     private PublicKeys keys;
     method KeyRequestClient() { keys = new PublicKeys(); }
+    method bool connect(string endpoint) {
+        Task<int64> t = spawn KeyRequestMountRaw(endpoint, "/n/keyrequests");
+        return t.await() == 0;
+    }
+    method void disconnect() {
+        Task<int64> t = spawn KeyRequestUnmountRaw("/n/keyrequests");
+        int64 ignored = t.await();
+    }
     method string submit(string endpoint, string kind, string clientKey, string transportKey) {
-        NetConn conn = new NetConn(endpoint);
         File mountpoint = new File("/n/keyrequests");
         File control = new File("/n/keyrequests/request");
         File receipt = new File("/n/keyrequests/status");
@@ -16,8 +61,7 @@ class KeyRequestClient {
         if(!keys.valid(clientKey) || !keys.valid(transportKey)) { return "ERROR: public keys must be 64 lowercase hex characters."; }
         if(cmp(kind, "register") != 0 && cmp(kind, "change-transport") != 0) { return "ERROR: unsupported request type."; }
         if(!mountpoint.exists()) { mountpoint.mkdir(); }
-        if(!conn.dial()) { return "ERROR: cannot connect to request service."; }
-        if(!conn.mountFarReplace("/n/keyrequests")) { conn.close(); return "ERROR: cannot mount proposal service."; }
+        if(!connect(endpoint)) { return "ERROR: cannot connect to request service."; }
         body = cat("{\"action\":\"", kind);
         body = cat(body, "\",\"clientKey\":\""); body = cat(body, clientKey);
         body = cat(body, "\",\"transportKey\":\""); body = cat(body, transportKey);
@@ -25,7 +69,7 @@ class KeyRequestClient {
         written = control.append(body);
         if(written == len(body)) { result = receipt.read(); }
         else { result = "ERROR: request rejected. There may already be a pending request for this key, or the inbox may be full."; }
-        conn.unmount("/n/keyrequests");
+        disconnect();
         return result;
     }
 }

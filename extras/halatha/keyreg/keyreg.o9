@@ -1,0 +1,237 @@
+import "stdlib/draw.o9";
+import "keyreg-support.o9";
+
+main {
+    KeyRegistry registry = new KeyRegistry();
+    DrawClipboard clipboard = new DrawClipboard();
+    DrawWindow win = new DrawWindow("babyfs key registration", 980, 760);
+    DrawLabel title = new DrawLabel("Babyfs: administrator key registry", 20, 16, 930, 28);
+    DrawLabel policy = new DrawLabel("Registration requires review and explicit approval. Public keys only.", 20, 50, 930, 26);
+    DrawTable keys = new DrawTable(20, 88, 930, 246, 3, 10);
+    DrawButton previous = new DrawButton("Previous", 20, 344, 110, 30);
+    DrawButton next = new DrawButton("Next", 140, 344, 110, 30);
+    DrawButton pending = new DrawButton("Pending requests", 380, 344, 210, 30);
+    DrawButton reject = new DrawButton("Review rejection", 600, 344, 210, 30);
+    DrawButton refresh = new DrawButton("Refresh", 260, 344, 110, 30);
+    DrawLabel clientLabel = new DrawLabel("Client signing public key (64 lowercase hex characters)", 20, 388, 740, 24);
+    DrawButton pasteClient = new DrawButton("Paste client key", 770, 382, 180, 30);
+    DrawButton pasteTransport = new DrawButton("Paste transport key", 770, 452, 180, 30);
+    DrawButton copy = new DrawButton("Copy client key", 720, 536, 230, 34);
+    DrawTextInput client = new DrawTextInput("", 20, 416, 930, 32);
+    DrawLabel transportLabel = new DrawLabel("Allowed Yggdrasil node public key", 20, 458, 740, 24);
+    DrawTextInput transport = new DrawTextInput("", 20, 486, 930, 32);
+    DrawButton enroll = new DrawButton("Review registration", 20, 536, 200, 34);
+    DrawButton revoke = new DrawButton("Review revocation", 230, 536, 200, 34);
+    DrawButton confirm = new DrawButton("Confirm", 440, 536, 130, 34);
+    DrawButton cancel = new DrawButton("Cancel", 580, 536, 130, 34);
+    DrawScrollText details = new DrawScrollText("Loading registry...", 20, 584, 930, 116);
+    DrawLabel footer = new DrawLabel("Revocation blocks new mounts; existing sessions and stored files remain.", 20, 712, 930, 26);
+    KeyRegistrationReview review = new KeyRegistrationReview();
+    string requestID;
+    string requestKind;
+    string cleanup;
+    int64 action;
+    int64 oldPending;
+    int64 oldReject;
+    bool showingPending;
+    string listing;
+    string result;
+    string selectedKey;
+    string via;
+    int64 page;
+    int64 count;
+    int64 row;
+    int64 selected;
+    int64 kind;
+    int64 oldPasteClient;
+    int64 oldPasteTransport;
+    int64 oldCopy;
+    int64 oldEnroll;
+    int64 oldRevoke;
+    int64 oldConfirm;
+    int64 oldCancel;
+    int64 oldRefresh;
+    int64 oldPrevious;
+    int64 oldNext;
+    bool running;
+    bool reload;
+    bool repaint;
+
+    win.background(0x203040);
+    win.accent(0xe0c040);
+    keys.setHeader(0, "Client key (select for full key)");
+    keys.setHeader(1, "Allowed transport");
+    keys.setHeader(2, "Access / storage cap");
+    keys.selectedColor(0x5f7fa7);
+    client.setPlaceholder("Paste the user's public key, never a seed or private key");
+    confirm.setEnabled(false);
+    win.add(title); win.add(policy); win.add(keys);
+    win.add(previous); win.add(next); win.add(refresh); win.add(pending); win.add(reject);
+    win.add(pasteClient); win.add(pasteTransport); win.add(copy);
+    win.add(clientLabel); win.add(client); win.add(transportLabel); win.add(transport);
+    win.add(enroll); win.add(revoke); win.add(confirm); win.add(cancel);
+    win.add(details); win.add(footer);
+    requestID = ""; requestKind = ""; showingPending = false; oldPending = 0; oldReject = 0;
+    reject.setEnabled(false);
+    page = 0;
+    selected = -1;
+    oldPasteClient = 0; oldPasteTransport = 0; oldCopy = 0;
+    oldEnroll = 0; oldRevoke = 0; oldConfirm = 0; oldCancel = 0;
+    oldRefresh = 0; oldPrevious = 0; oldNext = 0;
+    listing = "OK\n";
+    count = 0;
+    if(win.open()) {
+        running = true;
+        reload = true;
+        repaint = true;
+        while(running) {
+            if(reload) {
+                review.cancel();
+                confirm.setEnabled(false);
+                requestID = "";
+                if(showingPending) { listing = registry.command(4, "", ""); }
+                else { listing = registry.command(0, "", ""); }
+                count = 0;
+                if(registry.succeeded(listing)) {
+                    count = registry.count(listing);
+                    if(showingPending) { details.setText("Pending proposals are unverified. Confirm the public key with the requester before approving."); }
+                    else { details.setText("Select an enrolled key, or paste a new public key below. Registration is never automatic."); }
+                } else { details.setText(listing); }
+                if(page * 10 >= count) { page = 0; }
+                reload = false;
+                repaint = true;
+            }
+            if(repaint) {
+                keys.clear();
+                selected = -1;
+                row = 0;
+                while(row < 10) {
+                    if(page * 10 + row < count) {
+                        keys.setCell(row, 0, registry.shortKey(registry.cell(listing, page * 10 + row, 0)));
+                        keys.setCell(row, 1, registry.shortKey(registry.cell(listing, page * 10 + row, 1)));
+                        if(showingPending) { keys.setCell(row, 2, registry.cell(listing, page * 10 + row, 2)); }
+                        else { keys.setCell(row, 2, cat(registry.cell(listing, page * 10 + row, 2), " / 1 GiB")); }
+                    }
+                    row = row + 1;
+                }
+                previous.setEnabled(page > 0);
+                next.setEnabled((page + 1) * 10 < count);
+                repaint = false;
+            }
+            win.update();
+            kind = win.nextEvent();
+            if(kind == 2 && win.eventKey() == 0x1B) { running = false; }
+            if(kind == 1 || kind == 2) {
+                win.routeEvent();
+                if(keys.selectedRow() != selected) {
+                    selected = keys.selectedRow();
+                    review.cancel(); confirm.setEnabled(false); requestID = "";
+                    if(selected >= 0 && page * 10 + selected < count) {
+                        selectedKey = registry.cell(listing, page * 10 + selected, 0);
+                        client.setText(selectedKey);
+                        via = registry.cell(listing, page * 10 + selected, 1);
+                        if(cmp(via, "direct") == 0) { via = selectedKey; }
+                        transport.setText(via);
+                        if(showingPending) { requestID = registry.cell(listing, page * 10 + selected, 3); requestKind = registry.cell(listing, page * 10 + selected, 2); }
+                        details.setText(cat(cat(cat("Selected client: ", selectedKey), "\nTransport: "), via));
+                        if(showingPending) { details.setText(cat(cat(cat(cat(cat("Selected client: ", selectedKey), "\nTransport: "), via), "\nObserved Ygg peer: "), registry.cell(listing, page * 10 + selected, 4))); }
+                    }
+                }
+                if(pasteClient.count() != oldPasteClient) {
+                    oldPasteClient = pasteClient.count();
+                    via = registry.pasteKey();
+                    if(registry.valid(via)) { client.setText(via); }
+                    else { details.setText("Clipboard must contain one public key, not a private key command."); }
+                }
+                if(pasteTransport.count() != oldPasteTransport) {
+                    oldPasteTransport = pasteTransport.count();
+                    via = registry.pasteKey();
+                    if(registry.valid(via)) { transport.setText(via); }
+                    else { details.setText("Clipboard must contain one public key."); }
+                }
+                if(copy.count() != oldCopy) {
+                    oldCopy = copy.count();
+                    if(registry.valid(client.text())) { clipboard.write(client.text()); }
+                }
+                if(showingPending && len(requestID) > 0) {
+                    if(cmp(client.text(), registry.cell(listing, page * 10 + selected, 0)) != 0 || cmp(transport.text(), registry.cell(listing, page * 10 + selected, 1)) != 0) {
+                        requestID = "";
+                        details.setText("Request fields changed. Select the proposal again before reviewing it.");
+                    }
+                }
+                if(review.action() != 0 && !review.matches(client.text(), transport.text())) {
+                    review.cancel(); confirm.setEnabled(false);
+                    details.setText("Fields changed. Review the exact keys again before confirming.");
+                }
+                if(enroll.count() != oldEnroll) {
+                    oldEnroll = enroll.count();
+                    action = 1;
+                    if(showingPending && cmp(requestKind, "change-transport") == 0) { action = 3; }
+                    if(showingPending && len(requestID) == 0) { details.setText("Select an unchanged pending proposal first."); }
+                    else {
+                    if(review.prepare(action, client.text(), transport.text())) {
+                        confirm.setText("Register");
+                        if(action == 3) { confirm.setText("Update"); }
+                        confirm.setEnabled(true);
+                        details.setText(cat(cat(cat(cat("Review client: ", client.text()), "\nVia: "), transport.text()), "\nRegister: create a private 1 GiB share. Update: change transport only. Verify the requester before confirming."));
+                    } else {
+                        confirm.setEnabled(false);
+                        details.setText("Both public keys must be exactly 64 lowercase hexadecimal characters.");
+                    }
+                    }
+                }
+                if(revoke.count() != oldRevoke) {
+                    oldRevoke = revoke.count();
+                    if(review.prepare(2, client.text(), transport.text())) {
+                        confirm.setText("Revoke"); confirm.setEnabled(true);
+                        details.setText(cat(cat("Revoke client: ", client.text()), "\nBlock future mounts. Stored files and existing sessions remain. Click Revoke to approve."));
+                    } else { confirm.setEnabled(false); details.setText("A valid client public key is required."); }
+                }
+                if(reject.count() != oldReject) {
+                    oldReject = reject.count();
+                    if(showingPending && len(requestID) > 0 && review.prepare(4, client.text(), transport.text())) {
+                        confirm.setText("Reject"); confirm.setEnabled(true);
+                        details.setText("Reject this pending proposal? This changes no authorizations or stored files.");
+                    }
+                }
+                if(cancel.count() != oldCancel) {
+                    oldCancel = cancel.count(); review.cancel(); confirm.setEnabled(false);
+                    details.setText("Cancelled. No authorization changed.");
+                }
+                if(confirm.count() != oldConfirm) {
+                    oldConfirm = confirm.count();
+                    if(review.matches(client.text(), transport.text())) {
+                        details.setText("Applying the reviewed administrator action..."); win.update();
+                        action = review.action();
+                        if(action == 4) { result = registry.command(5, requestID, ""); }
+                        else { result = registry.command(action, client.text(), transport.text()); }
+                        if(registry.succeeded(result) && action != 4 && showingPending && len(requestID) > 0) {
+                            cleanup = registry.command(5, requestID, "");
+                            if(!registry.succeeded(cleanup)) { result = cat("Registry updated, but pending request cleanup failed.\n", cleanup); }
+                        }
+                        review.cancel(); confirm.setEnabled(false);
+                        if(registry.succeeded(result)) {
+                            requestID = "";
+                            if(showingPending) { listing = registry.command(4, "", ""); }
+                            else { listing = registry.command(0, "", ""); }
+                            if(registry.succeeded(listing)) { count = registry.count(listing); }
+                            else { count = 0; }
+                            repaint = true;
+                            details.setText(result);
+                        } else { details.setText(result); }
+                    }
+                }
+                if(pending.count() != oldPending) {
+                    oldPending = pending.count(); showingPending = !showingPending; page = 0; reload = true;
+                    reject.setEnabled(showingPending); revoke.setEnabled(!showingPending);
+                    if(showingPending) { pending.setText("Enrolled keys"); keys.setHeader(2, "Requested action (unverified)"); }
+                    else { pending.setText("Pending requests"); keys.setHeader(2, "Access / storage cap"); }
+                }
+                if(refresh.count() != oldRefresh) { oldRefresh = refresh.count(); reload = true; }
+                if(previous.count() != oldPrevious) { oldPrevious = previous.count(); page = page - 1; review.cancel(); confirm.setEnabled(false); repaint = true; }
+                if(next.count() != oldNext) { oldNext = next.count(); page = page + 1; review.cancel(); confirm.setEnabled(false); repaint = true; }
+            }
+        }
+        win.close();
+    } else { print("keyreg: cannot open display; run in an administrator drawterm/rio session.\n"); }
+}
