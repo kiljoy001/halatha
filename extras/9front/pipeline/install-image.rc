@@ -26,6 +26,12 @@ if(! installfile $src/usbboot.rc /rc/bin/halatha-usbboot)
 	ok=()
 if(! installfile $src/halctl.386 /386/bin/halctl)
 	ok=()
+if(test -f $src/install-coin.rc)
+	if(! installfile $src/install-coin.rc /rc/bin/install-coin)
+		ok=()
+if(test -f $src/coin-up.rc)
+	if(! installfile $src/coin-up.rc /rc/bin/coin-up)
+		ok=()
 if(test -f $src/9pmount.386){
 	if(! installfile $src/9pmount.386 /386/bin/9pmount)
 		ok=()
@@ -38,7 +44,7 @@ if(test -f $src/cs.386){
 	if(~ $#ok 1)
 		chmod +x /386/bin/ndb/cs
 }
-chmod +x /rc/bin/halatha.local /rc/bin/halatha-desktop /rc/bin/halatha-bind /rc/bin/halatha-watch /rc/bin/halatha-usbboot /rc/bin/o9build
+chmod +x /rc/bin/halatha.local /rc/bin/halatha-desktop /rc/bin/halatha-bind /rc/bin/halatha-watch /rc/bin/halatha-usbboot /rc/bin/o9build /rc/bin/install-coin /rc/bin/coin-up
 chmod +x /386/bin/halctl
 
 # The base image can also carry an older appended boot hook with an invalid

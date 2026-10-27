@@ -1,0 +1,184 @@
+#!/bin/rc
+# install-coin.rc - install the .coin / emercoin9p resolver on 9front.
+#
+#   install-coin [-a none|factotum] [-p port] [-n srvname] [-m mountpoint]
+#                [-v verify.coin] [-t verifyport] [-s srcdir] [-y 0|1] HOST
+#
+# HOST is the Emercoin 9P server (usually the Emercoin node's Yggdrasil
+# address, or a bootstrap name).  The payload directory (default
+# /n/9fat/coin or /n/cd/coin) may contain 9pmount.386, cs.386 and
+# coin-up.rc.  On a Halatha image those are already installed.
+rfork e
+path=(/bin /386/bin /rc/bin)
+argv0=$0
+
+fn usage {
+	echo 'usage: install-coin [-u] [-a none|factotum] [-p port] [-n srvname]'
+	echo '       [-m mountpoint] [-v verify.coin] [-t verifyport] [-s srcdir]'
+	echo '       [-y 0|1] HOST'
+	exit usage
+}
+
+fn installfile {
+	if(test -e $2)
+		rm -f $2
+	cp $1 $2
+}
+
+fn backup {
+	if(! test -e $1.coin-bak)
+		cp $1 $1.coin-bak
+}
+
+uninstall=0
+auth=none
+port=5640
+name=emercoin
+mnt=/n/emercoin
+verify=babyfileserver.rentonsoftworks.coin
+verifyport=17026
+src=()
+ygg=1
+
+while(~ $1 -*){
+	switch($1){
+	case -u
+		uninstall=1
+	case -a
+		shift
+		auth=$1
+	case -p
+		shift
+		port=$1
+	case -n
+		shift
+		name=$1
+	case -m
+		shift
+		mnt=$1
+	case -v
+		shift
+		verify=$1
+	case -t
+		shift
+		verifyport=$1
+	case -s
+		shift
+		src=$1
+	case -y
+		shift
+		ygg=$1
+	case *
+		usage
+	}
+	shift
+}
+if(~ $#* 0)
+	usage
+host=$1
+
+if(! ~ $#src 1){
+	if(test -d /n/9fat/coin)
+		src=/n/9fat/coin
+	if not if(test -d /n/cd/coin)
+		src=/n/cd/coin
+}
+
+if(~ $uninstall 1){
+	if(test -e /lib/coin.conf)
+		. /lib/coin.conf
+	if(test -e $mnt)
+		unmount $mnt >[2]/dev/null
+	if(test -e /srv/$name)
+		rm -f /srv/$name
+	if(test -e /386/bin/ndb/cs.coin-bak){
+		installfile /386/bin/ndb/cs.coin-bak /386/bin/ndb/cs
+		rm -f /386/bin/ndb/cs.coin-bak
+	}
+	if(test -e /386/bin/9pmount.coin-bak){
+		installfile /386/bin/9pmount.coin-bak /386/bin/9pmount
+		rm -f /386/bin/9pmount.coin-bak
+	}
+	rm -f /rc/bin/coin-up /lib/coin.conf
+	if(test -f /rc/bin/termrc.local){
+		grep -v 'coin-up' /rc/bin/termrc.local > /tmp/coin.termrc
+		installfile /tmp/coin.termrc /rc/bin/termrc.local
+	}
+	if(test -f /lib/ndb/local){
+		grep -v ' '$name /lib/ndb/local > /tmp/coin.ndb
+		installfile /tmp/coin.ndb /lib/ndb/local
+	}
+	for(p in `{ps | grep ' cs$' | awk '{print $2}'}){
+		echo kill > /proc/$p/ctl
+	}
+	sleep 1
+	/bin/ndb/cs &
+	echo uninstalled
+	exit
+}
+
+if(test -f $src/9pmount.386){
+	backup /386/bin/9pmount
+	installfile $src/9pmount.386 /386/bin/9pmount
+	chmod +x /386/bin/9pmount
+}
+if(test -f $src/cs.386){
+	backup /386/bin/ndb/cs
+	installfile $src/cs.386 /386/bin/ndb/cs
+	chmod +x /386/bin/ndb/cs
+}
+if(test -f $src/coin-up.rc)
+	installfile $src/coin-up.rc /rc/bin/coin-up
+if(! test -f /rc/bin/coin-up){
+	echo 'install-coin: coin-up.rc missing' >[1=2]
+	exit missing
+}
+chmod +x /rc/bin/coin-up
+
+if(! test -x /386/bin/9pmount)
+	echo 'install-coin: warning: /386/bin/9pmount is missing' >[1=2]
+if(! test -f /386/bin/ndb/cs)
+	echo 'install-coin: warning: /386/bin/ndb/cs is missing' >[1=2]
+
+mkdir -p /lib
+{
+	echo 'coinhost='^$host
+	echo 'coinport='^$port
+	echo 'coinname='^$name
+	echo 'coinmnt='^$mnt
+	echo 'coinauth='^$auth
+	echo 'coinverify='^$verify
+	echo 'coinverifyport='^$verifyport
+	echo 'coinygg='^$ygg
+} >/lib/coin.conf
+
+# The bootstrap name points at HOST.  cs resolves it from ndb before the
+# .coin lookup is available.
+if(! grep -s ' '$name /lib/ndb/local)
+	echo 'ip='^$host^' '$name >>/lib/ndb/local
+
+# Run at boot, after the network.  coin-up waits for the pkt route itself.
+hook=/rc/bin/termrc.local
+if(! test -f $hook)
+	> $hook
+if(! grep -s 'coin-up' $hook){
+	cp $hook $hook.coin-bak
+	echo 'if(test -x /rc/bin/coin-up) /rc/bin/coin-up &' >>$hook
+}
+
+/rc/bin/coin-up
+
+echo 'install-coin: .coin resolver check'
+echo 'tcp!'^$verify^'!443' | ndb/csquery
+if(test -s /tmp/coin-status)
+	cat /tmp/coin-status
+
+mkdir -p /n/coin-test
+9pmount '9p+tcp://'^$verify^'!'^$verifyport^'/' /n/coin-test >/tmp/coin-mount.log >[2=1]
+if(test -e /n/coin-test/status)
+	cat /n/coin-test/status
+if not
+	cat /tmp/coin-mount.log
+unmount /n/coin-test >[2]/dev/null
+
+echo 'install-coin: done'

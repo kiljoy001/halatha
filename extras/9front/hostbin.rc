@@ -57,10 +57,26 @@ if(test -d $MTPT/bin){
 	exit ''
 }
 
-# The network must be up: without it dial fails immediately and the mount
-# reports a confusing error.
-if(! grep -s '192.168.86.100' /net/ipselftab){
-	hlog 'hostbin: network not up, not mounting'
+# Stock termrc starts DHCP only if /lib/ndb has an Ethernet entry for the
+# machine name. This image has no such entry, so configure the browser NIC
+# explicitly. The boot hook runs in the background and does not hold up Rio.
+netready=()
+for(i in 1 2 3 4 5 6 7 8 9 10){
+	if(~ $#netready 0){
+		if(grep -s '192.168.86.100' /net/ipselftab)
+			netready=1
+		if(~ $#netready 0){
+			hlog 'hostbin: requesting guest DHCP address, attempt' $i
+			ip/ipconfig -h halatha >>$LOG >[2=1]
+			if(grep -s '192.168.86.100' /net/ipselftab)
+				netready=1
+			if(~ $#netready 0)
+				sleep 2
+		}
+	}
+}
+if(~ $#netready 0){
+	hlog 'hostbin: guest DHCP address missing after 10 attempts; not mounting'
 	exit 'nonet'
 }
 

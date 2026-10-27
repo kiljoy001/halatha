@@ -1,13 +1,16 @@
 // Real browser -> 9P -> Rio snarf -> browser regression test.
-// node dev/test-clipboard-e2e.mjs [url] [--local]
-// --local substitutes the checkout's page and boot scripts in this browser
-// only. The deployed server and its disk images are never modified.
+// node dev/test-clipboard-e2e.mjs [url] [--local] [--stall-disk-once]
+// --local substitutes the checkout's page, v86 loader, and boot scripts in
+// this browser only. The deployed server and its disk images are never modified.
+// --stall-disk-once holds the first disk range long enough to verify that
+// v86 retries before the guest's ATA read times out.
 // Requires Playwright and its Chromium browser.
 import { chromium } from "playwright";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
 const local = process.argv.includes("--local");
+const stallDiskOnce = process.argv.includes("--stall-disk-once");
 const pageFile = process.argv.find(arg => arg.startsWith("--page="))?.slice(7);
 const wasmFile = process.argv.find(arg => arg.startsWith("--wasm="))?.slice(7);
 const url = process.argv.slice(2).find(arg => !arg.startsWith("--")) ||
@@ -20,9 +23,25 @@ const context = await browser.newContext({
 const page = await context.newPage();
 page.on("pageerror", e => console.error("Page error:", e.message));
 const browserErrors = [];
+const diskTimeouts = [];
 page.on("console", message => {
     if (message.type() === "error") browserErrors.push(message.text());
+    if (message.text().includes("timed out; retrying")) diskTimeouts.push(message.text());
 });
+let stalledRange = "", retriedRange = false;
+if (stallDiskOnce) {
+    await page.route("**/local/9front-halatha-v9p*.img", async route => {
+        const range = route.request().headers().range;
+        if (range && !stalledRange) {
+            stalledRange = range;
+            await new Promise(resolve => setTimeout(resolve, 15000));
+            await route.continue().catch(() => {}); // timed out request was canceled
+            return;
+        }
+        if (range === stalledRange) retriedRange = true;
+        await route.continue();
+    });
+}
 
 // This independent test process gets a real Rio window namespace, just as
 // an application does. It never invokes clip to read or change snarf.
@@ -59,9 +78,15 @@ await page.route("**/extras/9front/halatha.local", async route => {
     const body = local
         ? await readFile(new URL("../extras/9front/halatha.local", import.meta.url), "utf8")
         : await response.text();
-    await route.fulfill({ response, body: body + "\n" + guestProbe });
+    // Start the Rio probe before optional hostbin setup, which may wait for
+    // the remote service when this page is served from the VPS.
+    await route.fulfill({ response, body: body.replace("\n", "\n" + guestProbe) });
 });
 if (local) {
+    await page.route("**/v86/lib/libv86.mjs*", async route => {
+        await route.fulfill({ contentType: "text/javascript", body: await readFile(
+            new URL("../v86/lib/libv86.mjs", import.meta.url), "utf8") });
+    });
     await page.route("**/extras/9front/clip.rc", async route => {
         let body = await readFile(new URL("../extras/9front/clip.rc", import.meta.url), "utf8");
         if (process.argv.includes("--trace")) body = body.replace("rc $0 run", "rc -x $0 run");
@@ -70,7 +95,7 @@ if (local) {
     await page.route(url, async route => {
         const response = await route.fetch();
         await route.fulfill({ response, body: await readFile(
-            pageFile || new URL("../examples/basic-v86-9legacy-direct.html", import.meta.url), "utf8") });
+            pageFile || new URL("../examples/basic-v86-9front-direct.html", import.meta.url), "utf8") });
     });
 }
 if (wasmFile) {
@@ -123,6 +148,14 @@ try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await waitFor("Rio test window", async () => await read("clip/test-ready") === "ready\n", 150000);
     console.log("Real Rio snarf endpoint ready");
+    const retries = Array.from({ length: 30 }, (_, i) => i + 1).join(" ");
+    await guest(`{ staged=(); for(i in ${retries}) { if(~ $#staged 0) { if(cmp -s /n/host/boot/ygg-up.rc /rc/bin/ygg-up) staged=1; if(~ $#staged 0) sleep 1 } }; if(~ $#staged 0) echo ygg-up-stage-mismatch }`);
+    console.log("PASS current ygg-up staged in guest");
+    if (stallDiskOnce) {
+        assert.ok(stalledRange && retriedRange && diskTimeouts.length,
+            `disk range was not retried after timeout: ${JSON.stringify({ stalledRange, retriedRange, diskTimeouts })}`);
+        console.log("PASS stalled disk range retried before Rio startup");
+    }
     if (process.argv.includes("--compare-probe")) {
         await guest("{ echo shorter >/tmp/cmp-full; cp /dev/null /tmp/cmp-empty; for(c in /bin/cmp /n/host/bin/cmp){ echo $c; $c -s /tmp/cmp-empty /tmp/cmp-full; echo $status; $c -s /tmp/cmp-full /tmp/cmp-empty; echo $status }; echo SNAPSHOTS; cat /tmp/cmp-full; cat /tmp/cmp-empty } >/n/host/clip/test-compare");
         console.log("Compare probe:", await read("clip/test-compare"));

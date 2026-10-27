@@ -5,32 +5,33 @@ Plan 9 — environment to the web. It is a significantly divergent fork of
 [Wanix](https://github.com/tractordev/wanix): it keeps Wanix's embeddable
 namespace runtime (the `<wanix-namespace>` HTML elements, Wasm/JavaScript
 tasks, and v86 virtualization) and builds on it a deep, native
-Plan 9 / 9legacy guest integration that stock Wanix does not have.
+Plan 9 guest integration that stock Wanix does not have. The direct browser
+page now boots 9front; 9legacy images remain available for compatibility.
 
 ## How Halatha differs from stock Wanix
 
 Stock Wanix boots Linux in v86 and bridges the guest to the host over a
 per-byte serial 9P channel. Halatha replaces and extends that:
 
-- **Plan 9 / 9legacy as first-class guests.** Boot 9front or 9legacy
+- **Plan 9 guests.** Boot 9front or 9legacy
   (Bell Labs 4th-edition 386) from whole-disk images into a VGA/rio display
   — not just Linux. The guest kernel lives on the image, so no host
   `bzImage` or host9p root is used. (`examples/basic-vm-9front.html`,
   `examples/basic-vm-9legacy.html`)
 - **virtio-9p host bridge.** A guest-kernel `devvirtio9p` driver (`#9`)
-  gives the 9legacy guest a message-granular, plain-9P2000 mount of the
+  gives either guest a message-granular, plain-9P2000 mount of the
   host namespace at `/n/host` — replacing Wanix's slow per-byte serial 9P
   bridge. Host files appear as a native 9P tree inside the guest.
 - **Go 9P file server (`fs/p9p`).** A 9P file server in Go that serves the
   wanix kernel namespace to the guest across the virtio-9p transport.
 - **WebUSB through the guest USB stack.** A software-only USB
-  host-controller-interface driver (`usbns`) in the 9legacy kernel
+  host-controller-interface driver (`usbns`) in the guest kernel
   registers a root hub with `devusb`, so the stock `usbd` and the
   unmodified `usb/disk`, `usb/serial`, and `usb/ether` class drivers come
   up at boot and forward transfers to the browser's WebUSB bridge. Stock
   Wanix has no USB story at all.
-- **9legacy image builder (`extras/9front/mk9legacyimg`).** A Go tool that
-  assembles the guest images: patches the gzroot, installs the virtio-9p
+- **Guest image builders.** The 9front QEMU pipeline builds the default
+  browser disk and kernel. The 9legacy Go builder patches its gzroot, installs the virtio-9p
   entries and the USB userland, layers guest tools and the troff/hyphen
   fix, grows the gzroot, and writes PLAN9.INI — producing the 16 MB base
   and 40 MB rich (troff / ygg / o9 / halctl / C toolchain) production
@@ -75,7 +76,7 @@ and wire up terminals and a VS Code workbench, all from HTML.
 - **No backend required.** The runtime (`wanix.min.js` + `wanix.wasm`) runs entirely client-side. Host static assets on any CDN.
 - **Progressive complexity.** Start with a single Wasm binary and terminal. Add Linux or Plan 9 VMs, a full IDE workbench, or cross-origin federation when you need them.
 
-## Plan 9 / 9legacy guests
+## Plan 9 guests
 
 ### Boot 9front in v86
 
@@ -97,6 +98,9 @@ v86) and the `screen` attribute gives the VM a VGA canvas:
 ```
 
 See [examples/basic-vm-9front.html](examples/basic-vm-9front.html).
+For the full browser namespace, clipboard, and guest tools, use the
+[9front direct page](examples/basic-v86-9front-direct.html) with a disk built
+by the [9front image pipeline](extras/9front/pipeline/README.md).
 
 ### Boot 9legacy with the virtio-9p host bridge
 

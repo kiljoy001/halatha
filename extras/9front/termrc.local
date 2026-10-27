@@ -6,14 +6,51 @@
 # kernel) carries plain 9P2000 to wanix, so mounting it needs no helper
 # process. A failure is reported on the console and in /tmp/host9p.err.
 
+# v86 presents its RTC in UTC. Stock termrc assumes a local-time RTC (-L),
+# and aux/timesync only works off errors gradually. The browser's RTC is
+# already current, so copy it to the system clock every two seconds instead.
+# termrc.local is sourced after termrc's default args and before timesync.
+TIMESYNCARGS=''
+{
+	while(sleep 2){
+		cat '#r/rtc' >/dev/time >[2]/dev/null
+	}
+} &
+
+# Set the guest's name before termrc starts cs and selects /cfg/$sysname.
+echo -n halatha >/dev/sysname
+
 if(! test -d /n/host)
 	mkdir -p /n/host
-if(! mount -c '#9/0' /n/host >[2]/tmp/host9p.err)
+if(! mount '#9/0' /n/host >[2]/tmp/host9p.err)
 	echo 'halatha: virtio-9p host mount failed; see /tmp/host9p.err' >/dev/cons
 if not
 	echo 'mounted #9/0' >/n/host/boot/host9p
 
-# Halatha core service hook: start Yggdrasil after networking comes up.
-# Background it so rio/terminal startup never waits on DHCP or peer dialing.
-if(test -x /rc/bin/halatha.local)
-	/rc/bin/halatha.local &
+# Boot-stage usbd would inherit a namespace without /n/host, so it could
+# never see WebUSB devices added later. Start the 9front USB service here,
+# after the host mount, before Rio inherits this namespace.
+if(test -x /rc/bin/halatha-usbboot)
+	/rc/bin/halatha-usbboot
+
+# Start the browser's current service hook after it has finished publishing
+# boot files. Keep the wait outside termrc so Rio starts immediately. The
+# installed copy is a fallback for boots without a browser host namespace.
+{
+	seeded=()
+	usedhost=()
+	for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
+		if(~ $#seeded 0){
+			if(test -f /n/host/boot/seed-ready)
+				seeded=1
+			if(~ $#seeded 0)
+				sleep 1
+		}
+	}
+	if(~ $#seeded 1 && test -r /n/host/boot/halatha.local){
+		usedhost=1
+		rc /n/host/boot/halatha.local
+	}
+	if(~ $#usedhost 0 && test -x /rc/bin/halatha.local)
+		/rc/bin/halatha.local
+} &

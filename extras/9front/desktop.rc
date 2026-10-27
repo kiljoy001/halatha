@@ -1,0 +1,13 @@
+#!/bin/rc
+# Rio startup applications. Edit this file to control the browser guest's
+# desktop; the page publishes it at /n/host/boot/desktop.rc on each boot.
+
+# Factotum requests a key through this Rio helper when an application needs
+# one. fgui creates and hides its own window until it has a prompt to show.
+if(test -x /bin/auth/fgui)
+	auth/fgui >/dev/null >[2=1] &
+
+if(test -x /bin/games/catclock)
+	window 830,0,1018,155 games/catclock
+if(test -x /bin/bar)
+	window 700,738,1018,766 bar

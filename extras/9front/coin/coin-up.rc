@@ -1,0 +1,82 @@
+#!/bin/rc
+# coin-up.rc - mount the Emercoin 9P namespace and restart cs so the
+# .coin lookup in cs can reach /n/emercoin.  Installed as /rc/bin/coin-up
+# and normally run from termrc.local.  Safe to run again.
+. /lib/coin.conf
+
+fn log {
+	echo `{date} $* >>/tmp/coin.log
+}
+
+log 'coin-up starting'
+
+# Bring up the guest network and loopback if the boot rc has not done it.
+if(! test -e /net/ipifc/0/ctl){
+	if(test -x /bin/ip/ipconfig)
+		/bin/ip/ipconfig
+	if not if(test -x /ip/ipconfig)
+		/ip/ipconfig
+	if not if(test -x /386/bin/ip/ipconfig)
+		/386/bin/ip/ipconfig
+}
+if(! test -e /net/ipselftab)
+	ip/ipconfig loopback /dev/null 127.1 /128
+
+fn restartcs {
+	for(p in `{ps | grep ' cs$' | awk '{print $2}'}){
+		echo kill > /proc/$p/ctl
+	}
+	sleep 1
+	/bin/ndb/cs &
+	sleep 1
+	if(test -e /net/cs)
+		echo refresh >/net/cs >[2]/dev/null
+}
+
+# Wait for the IP stack.
+i=0
+while(! test -e /net/ipifc/0/ctl && ! ~ $i 30){
+	sleep 1
+	i=`{expr $i + 1}
+}
+
+# Start the local Yggdrasil node if configured.
+if(~ $coinygg 1 && test -x /rc/bin/ygg-up){
+	log 'starting ygg-up'
+	/rc/bin/ygg-up > /tmp/coin-ygg.log >[2=1]
+}
+
+# The .coin records point at Yggdrasil addresses; wait for the pkt route.
+if(~ $coinygg 1){
+	i=0
+	while(! grep -s '200::' /net/iproute && ! ~ $i 30){
+		sleep 1
+		i=`{expr $i + 1}
+	}
+}
+
+# cs must see the new interface before resolving the Emercoin server.
+restartcs
+
+mkdir -p $coinmnt
+if(! test -e /srv/$coinname){
+	dial='tcp!'^$coinhost^'!'^$coinport
+	if(~ $coinauth factotum)
+		srv -q $dial $coinname $coinmnt
+	if not
+		srv -nq $dial $coinname $coinmnt
+}
+if(! test -e $coinmnt/ctl){
+	log 'mount failed'
+	exit 'no coin mount'
+}
+
+# cs started before the mount and will not see it otherwise.  Restart it
+# in this namespace so the coinlookup can open /n/emercoin/ctl.
+restartcs
+
+# Verify one NVS record and leave the result for install-coin.
+echo 'name_show dns:'^$coinverify > $coinmnt/ctl
+status=`{cat $coinmnt/status}
+echo $status > /tmp/coin-status
+log 'name_show '^$status

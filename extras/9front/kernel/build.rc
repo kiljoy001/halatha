@@ -5,8 +5,47 @@
 # BUILD-OK or BUILD-FAIL on the console for whoever drives the build.
 rfork e
 src=/n/9fat/halatha
+echo starting >$src/build.log
 cp $src/devvirtio9p.c /sys/src/9/pc/devvirtio9p.c
+cp $src/usbns.c /sys/src/9/pc/usbns.c
 cp $src/pchalatha /sys/src/9/pc/pchalatha
+if(test -f $src/il.c)
+	cp $src/il.c /sys/src/9/ip/il.c
+if(test -f $src/devtls.c)
+	cp $src/devtls.c /sys/src/9/port/devtls.c
+if(test -f $src/tlshand13.c){
+	mkdir -p /tmp/tlsinclude
+	cp /sys/include/libsec.h /tmp/tlsinclude/libsec.h
+	echo 'int tlsClient13(int, TLSconn*, Thumbprint*);' >>/tmp/tlsinclude/libsec.h
+	if(! 8c -I/tmp/tlsinclude -o /tmp/tlsclient13.8 $src/tlsclient.c >$src/tlsclient-build.log >[2=1]){
+		tail -25 $src/tlsclient-build.log
+		echo BUILD-FAIL
+		exit fail
+	}
+	if(! 8c -I/tmp/tlsinclude -o /tmp/tlshand13.8 $src/tlshand13.c >>$src/tlsclient-build.log >[2=1]){
+		tail -25 $src/tlsclient-build.log
+		echo BUILD-FAIL
+		exit fail
+	}
+	if(! 8l -o $src/tlsclient.386 /tmp/tlsclient13.8 /tmp/tlshand13.8 >>$src/tlsclient-build.log >[2=1]){
+		tail -25 $src/tlsclient-build.log
+		echo BUILD-FAIL
+		exit fail
+	}
+}
+if(test -f $src/cs.c){
+	cp $src/cs.c /sys/src/cmd/ndb/cs.c
+	cd /sys/src/cmd/ndb
+	if(! mk 8.cs >$src/cs-build.log >[2=1]){
+		tail -20 $src/cs-build.log
+		echo BUILD-FAIL
+		exit fail
+	}
+	if(! cp 8.cs $src/cs.386){
+		echo BUILD-FAIL
+		exit fail
+	}
+}
 cd /sys/src/9/pc
 if(mk 'CONF=pchalatha' >$src/build.log >[2=1] && cp 9pchalatha /n/9fat/9pchalatha){
 	echo OK >$src/STATUS

@@ -26,6 +26,15 @@ cp $src/keyrequest.o9 $dst/keyrequest.o9
 cp $src/keyrequest-client.o9 $dst/client.o9
 cp $src/keyrequest-publickeys.o9 $dst/publickeys.o9
 cd $dst
+rm -f keyrequest.bin
+prebuilt=()
+if(test -r $src/keyrequest.386){
+	if(cp $src/keyrequest.386 keyrequest.bin){
+		chmod +x keyrequest.bin
+		if(test -x keyrequest.bin)
+			prebuilt=1
+	}
+}
 if(! test -x keyrequest.bin){
 	if(! o9build keyrequest.o9 keyrequest.bin >/tmp/keyrequest-build.log >[2=1]){
 		echo 'FAIL keyrequest 386 build' >/n/host/boot/keyrequest-status
@@ -34,7 +43,10 @@ if(! test -x keyrequest.bin){
 	}
 }
 if(~ $1 build){
-	echo 'OK keyrequest 386 build' >/n/host/boot/keyrequest-status
+	if(~ $#prebuilt 1)
+		echo 'OK keyrequest 386 prebuilt' >/n/host/boot/keyrequest-status
+	if not
+		echo 'OK keyrequest 386 build' >/n/host/boot/keyrequest-status
 	exit ''
 }
 exec ./keyrequest.bin

@@ -1,104 +1,197 @@
 #!/bin/rc
-# halatha.local - optional local boot hook, backgrounded by termrc (the
-# "# halatha optional local boot hook" block mk9legacyimg installs).
-# Brings up Yggdrasil once the network is up and auto-injects public peers
-# so the node joins the global Yggdrasil mesh with no manual config -- a
-# terminal for a 9p grid. See extras/9front/README.md for the full picture.
+# halatha.local — lightweight guest initialization hook
+# Runs after /n/host is mounted. Keep this minimal so boot is instant.
+
+LOG=/tmp/halatha-boot.log
+
+fn ylog {
+	echo $* >>$LOG
+}
+
+ylog 'halatha.local: boot hook starting'
+
+# Wait up to 15s for Wanix host filesystem mount (/n/host/boot).
+# rc has no break, so guard the body instead: an unguarded `break` fails
+# with "No such file or directory" and the loop still runs to completion,
+# costing the full 15s on every boot.
+hostup=()
+for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15){
+	if(~ $#hostup 0){
+		if(test -d /n/host/boot)
+			hostup=1
+		if(~ $#hostup 0)
+			sleep 1
+	}
+}
+
+# The browser populates boot/ asynchronously after the 9P mount appears.
+# Wait for the final marker so newly served scripts are not missed at startup.
+seeded=()
+for(group in 1 2 3 4){
+    for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30){
+        if(~ $#seeded 0){
+            if(test -f /n/host/boot/seed-ready)
+                seeded=1
+            if(~ $#seeded 0)
+                sleep 1
+        }
+    }
+}
+
+# Install on-demand utilities to /rc/bin. Same shape for each: the host
+# serves <name>.rc under /n/host/boot, we land it at /rc/bin/<name>.
+# Some installed files are mode 0555, so cp cannot truncate them in place.
+# Copy beside the target, then rename across the writable directory.
+fn stageexec {
+	tmp=$2^.halatha-new
+	rm -f $tmp
+	if(cp $1 $tmp && chmod +x $tmp && mv $tmp $2)
+		ylog 'halatha.local: installed '$2
+	if not {
+		ylog 'halatha.local: FAIL installing '$2
+		rm -f $tmp
+	}
+}
+
+fn stagefile {
+	tmp=$2^.halatha-new
+	rm -f $tmp
+	if(cp $1 $tmp && mv $tmp $2)
+		ylog 'halatha.local: staged '$2
+	if not {
+		ylog 'halatha.local: FAIL staging '$2
+		rm -f $tmp
+	}
+}
+
+for(t in ipfs clip ygg-up ygg-peers pkg hostbin keyrequest o9build){
+	if(test -r /n/host/boot/$t^.rc)
+		stageexec /n/host/boot/$t^.rc /rc/bin/$t
+}
+
+if(test -x /rc/bin/keyrequest){
+	echo 'STARTING keyrequest 386 build' >/n/host/boot/keyrequest-status
+	/rc/bin/keyrequest build >>$LOG >[2=1] &
+}
+if not
+	echo 'FAIL keyrequest launcher not installed after boot seed' >/n/host/boot/keyrequest-status
+
+# Mount the host's service namespace (bin/, ipfs/, ygg/) over 9P.
 #
-# Peer CONNECTION (dialing tcp:// / tls:// peers) needs real outbound TCP.
-# That is page-side: launch with ?relay=wisp://host:port (or set WISP_RELAY
-# in the direct page) so v86 routes guest TCP via WebSocket to real TCP.
-# With the default fetch backend yggdrasil runs and gets an overlay address
-# but cannot reach peers. Under QEMU user networking the peers dial for real.
+# This runs from halatha.local, NOT from halatha-bind, because
+# halatha-bind lives only in the disk image: it is installed at build time
+# and sourced from the profile, so it is only ever as new as the last image
+# build. halatha.local is refreshed from /n/host/boot on every page load,
+# which means changes here reach a running guest without reflashing.
 #
-# rc has no break/continue builtins; the wait loops run their full count and
-# act only while the condition is unmet.
-
-if(! test -x /386/bin/yggdrasil){
-	echo 'halatha.local: /386/bin/yggdrasil not present; not starting'
-	exit 'no ygg'
+# The mount itself is done here, in the boot namespace, deliberately: a
+# mount is shared by every process that inherits the namespace, and rio
+# forks from this one. The BIND into /bin still has to happen in the
+# profile (halatha-bind), because rio rforks RFNAMEG and a bind done here
+# would not be visible in its windows.
+if(test -r /n/host/boot/hostbin.rc){
+	/rc/bin/hostbin >>$LOG >[2=1]
+	ylog 'halatha.local: ran hostbin'
 }
 
-# Wait for an IP interface to be bound (portable: v86 fetch DHCP gives
-# 192.168.86.100, QEMU SLIRP gives 10.0.2.15 -- either way an ipifc gets
-# bound once ipconfig succeeds). Backgrounded, so this never blocks rio/boot.
-for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60){
-	if(! test -e /net/ipifc/0/ctl)
-		sleep 1
-}
-if(! test -e /net/ipifc/0/ctl){
-	echo 'halatha.local: network did not come up; not starting yggdrasil'
-	exit 'no net'
+# The request client dials babyfs over the guest's own Yggdrasil node.
+# Start it after the host service namespace is mounted so its binaries can
+# be installed from the verified bin export. ygg-up performs its own network
+# readiness checks and runs in the background to keep the desktop responsive.
+if(test -x /rc/bin/ygg-up){
+	/rc/bin/ygg-up >>$LOG >[2=1] &
+	ylog 'halatha.local: started ygg-up'
+	# Publish a bounded guest-side readiness report to the browser's RAM
+	# namespace. This reports the VM node, never the host/VPS node.
+	{
+		ready=()
+		for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24){
+			if(~ $#ready 0){
+				if(test -x /386/bin/yggdrasilctl){
+				/386/bin/yggdrasilctl -endpoint tcp://127.0.0.1:9001 getSelf >/tmp/halatha-ygg-self >[2]/dev/null
+				if(grep -s 'Public key:' /tmp/halatha-ygg-self)
+					ready=1
+				}
+				if(~ $#ready 0)
+					sleep 5
+			}
+		}
+		if(test -d /n/host/boot){
+			if(~ $#ready 1){
+				echo 'OK guest-ygg node responds' >/n/host/boot/ygg-health
+				cat /tmp/halatha-ygg-self >>/n/host/boot/ygg-health
+				# cs cached available address families before Yggdrasil
+				# created its IPv6 interface. Refresh it for srv and Rio.
+				echo refresh >/net/cs >[2]/dev/null
+				if(! test -d /n/yggrequest)
+					mkdir /n/yggrequest
+				babyfsendpoint=()
+				if(test -r /n/host/boot/babyfs-endpoint)
+					babyfsendpoint=`{cat /n/host/boot/babyfs-endpoint}
+				if(~ $#babyfsendpoint 0)
+					echo 'FAIL babyfs endpoint config missing' >>/n/host/boot/ygg-health
+				if(~ $#babyfsendpoint 1 && srv -nq $babyfsendpoint baby-proposals /n/yggrequest >/tmp/halatha-ygg-mount >[2=1]){
+					if(test -f /n/yggrequest/status){
+						echo 'OK guest-ygg babyfs 9P status reachable' >>/n/host/boot/ygg-health
+						cat /n/yggrequest/status >>/n/host/boot/ygg-health
+					}
+					if not
+						echo 'FAIL guest-ygg babyfs status missing' >>/n/host/boot/ygg-health
+					unmount /n/yggrequest >[2]/dev/null
+				}
+				if not {
+					echo 'FAIL guest-ygg babyfs 9P mount' >>/n/host/boot/ygg-health
+					cat /tmp/halatha-ygg-mount >>/n/host/boot/ygg-health
+					echo 'Guest Yggdrasil peers:' >>/n/host/boot/ygg-health
+					/386/bin/yggdrasilctl -endpoint tcp://127.0.0.1:9001 getPeers >>/n/host/boot/ygg-health >[2=1]
+					echo 'Guest Yggdrasil startup:' >>/n/host/boot/ygg-health
+					tail -30 /tmp/ygg-start.log >>/n/host/boot/ygg-health >[2=1]
+					echo 'Guest Yggdrasil daemon:' >>/n/host/boot/ygg-health
+					tail -30 /tmp/yggdrasil.log >>/n/host/boot/ygg-health >[2=1]
+				}
+			}
+			if not {
+				echo 'FAIL guest-ygg node did not respond within 120s' >/n/host/boot/ygg-health
+				tail -20 /tmp/ygg-start.log >>/n/host/boot/ygg-health >[2]/dev/null
+			}
+		}
+	} &
 }
 
-# Config: use a bundled /lib/yggdrasil.conf if present (stable identity + your
-# own peers, added via mk9legacyimg -add src:/lib/yggdrasil.conf). Otherwise
-# generate a fresh random one each boot -- random key => unique node identity
-# per boot (no key-collision across distributed images), overlay address
-# rotates, which is fine for a terminal. Bundle a conf for a stable address.
-#
-# The generated conf goes to /tmp, NOT /lib, for two reasons. (1) /lib is on
-# the read-only root fs of a disk-booted image, so `yggdrasil -genconf >
-# /lib/yggdrasil.conf` silently fails -- the redirect target is unwritable,
-# the file is never created, and the second test below falls through to
-# "genconf failed". /tmp is a writable ramfs (we already log to
-# /tmp/yggdrasil.log below), so it takes the generated conf. (2) A per-boot
-# random key must NOT persist: writing it to /lib (if that were writable)
-# would leave it there for the next boot, so test -e would succeed and it
-# would never regenerate -- defeating "fresh random each boot". /tmp is
-# cleared each boot, so a per-boot conf there stays per-boot. /lib/
-# yggdrasil.conf remains the read-only bundled-stable-identity path.
-CONF=/lib/yggdrasil.conf
-if(! test -e $CONF){
-	CONF=/tmp/yggdrasil.conf
-	/386/bin/yggdrasil -genconf > $CONF
-	echo 'halatha.local: generated' $CONF '(random key)'
-}
-if(! test -e $CONF){
-	echo 'halatha.local: yggdrasil -genconf failed; not starting'
-	exit 'no conf'
+if(test -r /n/host/boot/clip.o9){
+	stagefile /n/host/boot/clip.o9 /rc/bin/clip.o9
+	# No auto-build: o9build is a full C compile, too costly at boot. Run
+	# `o9build /rc/bin/clip.o9 /rc/bin/clip.bin` by hand if you want it.
 }
 
-# Start yggdrasil in the shared namespace (no rfork) so its pkt ipifc is
-# visible to all processes. Admin listener is tcp://localhost:9001
-# (yggdrasilctl). grep -v grep avoids self-match.
-if(ps | grep -v grep | grep -s yggdrasil){
-	echo 'halatha.local: yggdrasil already running'
-}
-if not{
-	/386/bin/yggdrasil -useconffile $CONF -logto /tmp/yggdrasil.log &
-	echo 'halatha.local: yggdrasil started (admin tcp://localhost:9001, log /tmp/yggdrasil.log)'
+# The worker attaches its own hidden Rio window when the desktop appears.
+# It can therefore reach snarf even though this hook starts before Rio.
+if(test -x /rc/bin/clip){
+	rc /rc/bin/clip sync
+	ylog 'halatha.local: started clipboard sync'
 }
 
-# Auto-inject public peers from /lib/yggdrasil.peers (bundled by mk9legacyimg
-# -ygg from extras/9front/yggdrasil.peers) so the node joins the mesh with no
-# manual config. Wait for the admin socket, then addPeer each non-comment line.
-# Peers added at runtime are not persisted, but we re-inject every boot.
-if(! test -r /lib/yggdrasil.peers){
-	exit ''
+if(test -x /rc/bin/pkg){
+	if(test -d /n/host/bin){
+		statusup=()
+		for(i in 1 2 3 4 5 6 7 8 9 10){
+			if(~ $#statusup 0){
+				if(test -f /n/host/bin/STATUS)
+					statusup=1
+				if(~ $#statusup 0)
+					sleep 1
+			}
+		}
+		# The bind itself is NOT done here. rio does rfork(RFNAMEG) at
+		# startup and per window, so it snapshots the namespace; a bind
+		# from this hook lands in the boot namespace and no rio window
+		# ever sees it. /rc/bin/halatha-bind runs from the profile,
+		# before `exec rio`, so rio inherits it.
+		if(test -f /n/host/bin/STATUS)
+			ylog 'halatha.local: /n/host/bin ready (profile binds it)'
+		if not
+			ylog 'halatha.local: timeout waiting for /n/host/bin/STATUS'
+	}
 }
-# wait for the admin listener (yggdrasilctl getSelf succeeds once it's up)
-for(i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40){
-	if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null)
-		sleep 1
-}
-if(! yggdrasilctl getSelf >/dev/null >[2]/dev/null){
-	echo 'halatha.local: yggdrasil admin socket never came up; peers not injected'
-	exit 'no admin'
-}
-n=0
-# grep -s in Plan 9 means STATUS ONLY (no output), not error-suppress -- so
-# never combine -s with a list-producing grep. -e gives multiple patterns:
-# skip comments and blank lines. Backticks are why this is a real rc file.
-for(p in `{grep -v -e '^#' -e '^$' /lib/yggdrasil.peers}){
-	# yggdrasilctl takes key=value args (SplitN arg on '='), NOT bare positionals:
-	# a bare URI has no '=' so it's "Ignoring invalid argument" and uri="" ->
-	# addPeer fails. Pass 'uri='$p so the value is one literal arg "uri=<peer>".
-	# The '=' MUST be single-quoted: rc's lexer makes '=' a token delimiter and
-	# `name=value` is an assignment (syn.y `assign: first '=' word`), so an
-	# UNquoted uri=$p after the command is `cmd assign` -> syntax error.
-	# interface is optional (omitempty).
-	if(yggdrasilctl addPeer 'uri='$p >/dev/null >[2]/dev/null)
-		n=`{hoc -e $n^'+1'}
-}
-echo 'halatha.local: injected' $n 'peers from /lib/yggdrasil.peers'
+
+ylog 'halatha.local: boot hook completed'

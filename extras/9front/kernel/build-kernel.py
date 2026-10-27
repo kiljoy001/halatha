@@ -23,7 +23,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
-SOURCES = ["devvirtio9p.c", "pchalatha", "build.rc"]
+SOURCES = ["devvirtio9p.c", "usbns.c", "pchalatha", "build.rc"]
 
 BUILD_PLAN9INI = """bootfile=9pc
 bootargs=local!/dev/sdC0/fs -A
@@ -120,6 +120,23 @@ def main():
     mtools("mmd", "-i", fat, "::halatha")
     for name in SOURCES:
         mtools("mcopy", "-i", fat, str(HERE / name), "::halatha/" + name)
+    il_source = os.environ.get("NINEFRONT_IL_SOURCE")
+    if il_source:
+        mtools("mcopy", "-i", fat, il_source, "::halatha/il.c")
+    cs_source = os.environ.get("NINEFRONT_CS_SOURCE")
+    if cs_source:
+        mtools("mcopy", "-i", fat, cs_source, "::halatha/cs.c")
+    devtls_source = os.environ.get("NINEFRONT_DEVTLS_SOURCE")
+    if devtls_source:
+        mtools("mcopy", "-i", fat, devtls_source, "::halatha/devtls.c")
+    tls13_source = os.environ.get("NINEFRONT_TLS13_SOURCE")
+    if tls13_source:
+        checkout = Path(tls13_source).resolve().parents[3]
+        for src, dest in (
+            (Path(tls13_source), "tlshand13.c"),
+            (checkout / "src/cmd/tlsclient.c", "tlsclient.c"),
+        ):
+            mtools("mcopy", "-i", fat, str(src), "::halatha/" + dest)
     print(f"build-kernel: 9fat at byte {off}; sources and build plan9.ini installed")
 
     qemu = ["qemu-system-i386", "-m", "1024", "-display", "none", "-monitor", "none",
@@ -152,6 +169,10 @@ def main():
     mtools("mcopy", "-n", "-i", fat, "::halatha/build.log", str(out / "build.log"))
     if result == "BUILD-OK":
         mtools("mcopy", "-n", "-i", fat, "::9pchalatha", str(out / "9pchalatha"))
+        if cs_source:
+            mtools("mcopy", "-n", "-i", fat, "::halatha/cs.386", str(out / "cs.386"))
+        if tls13_source:
+            mtools("mcopy", "-n", "-i", fat, "::halatha/tlsclient.386", str(out / "tlsclient.386"))
         print(f"build-kernel: kernel at {out / '9pchalatha'}")
     else:
         fail(f"build did not succeed; see {out / 'build.log'} and serial.log")

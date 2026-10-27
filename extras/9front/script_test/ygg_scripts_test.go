@@ -16,6 +16,7 @@ func TestYggRcScriptsParseWithPlan9Rc(t *testing.T) {
 	rc := plan9Rc(t)
 	for _, script := range []string{
 		"halatha.local",
+		"hostbin.rc",
 		"ygg-up.rc",
 		"ygg-peers.rc",
 		"pipeline/halatha-grid-terminal.rc",
@@ -30,6 +31,7 @@ func TestYggRcScriptsParseWithPlan9Rc(t *testing.T) {
 				"fn cp { exit '' }",
 				"fn rm { exit '' }",
 				"fn grep { exit no }",
+				"fn sleep { exit '' }",
 				"fn ip/ipconfig { exit '' }",
 				"fn yggdrasilctl { exit no }",
 				"fn hoc { echo 1 }",
@@ -79,7 +81,8 @@ func TestYggAdminSocketSetup(t *testing.T) {
 
 	peers := read(t, "ygg-peers.rc")
 	mustContain(t, "ygg-peers.rc", peers, "yggdrasilctl -endpoint tcp://127.0.0.1:9001")
-	mustContain(t, "ygg-peers.rc", peers, "addPeer 'uri='$p")
+	mustContain(t, "ygg-peers.rc", peers, "PEER=tls://")
+	mustContain(t, "ygg-peers.rc", peers, "addPeer 'uri='$PEER")
 }
 
 // TestHalathaLocalStagesHostTools pins halatha.local's actual job: staging
@@ -133,19 +136,22 @@ func TestHalathaBindRunsBeforeRio(t *testing.T) {
 // bridge is gone -- it was far slower -- so nothing may fall back to it.
 func TestTermrcMountsHostOverVirtio9p(t *testing.T) {
 	body := read(t, "termrc.local")
-	mustContain(t, "termrc.local", body, "mount -c '#9/0' /n/host")
+	mustContain(t, "termrc.local", body, "mount '#9/0' /n/host")
 	// A successful mount leaves a marker the host can read back, so the
 	// browser can tell "the guest wrote through #9" from "nothing happened".
 	mustContain(t, "termrc.local", body, ">/n/host/boot/host9p")
 	for _, gone := range []string{"serial9p", "/dev/eia", "/srv/host"} {
 		mustNotContain(t, "termrc.local", body, gone)
 	}
-	// The boot hook still runs, after the mount it depends on.
-	mount := strings.Index(body, "mount -c '#9/0' /n/host")
-	hook := strings.Index(body, "/rc/bin/halatha.local &")
+	// The browser's current hook runs after the mount and seed marker. The
+	// installed copy is only a fallback when the browser is unavailable.
+	mount := strings.Index(body, "mount '#9/0' /n/host")
+	hook := strings.Index(body, "rc /n/host/boot/halatha.local")
 	if hook < 0 || hook < mount {
 		t.Errorf("termrc.local must start halatha.local after mounting /n/host")
 	}
+	mustContain(t, "termrc.local", body, "/n/host/boot/seed-ready")
+	mustContain(t, "termrc.local", body, "/rc/bin/halatha.local")
 }
 
 // TestKernelBuildScriptParses checks kernel/build.rc with plan9port rc
@@ -181,7 +187,13 @@ func TestRuntimeScriptsStaySmall(t *testing.T) {
 				code++
 			}
 		}
-		if code > 90 {
+		limit := 90
+		if script == "halatha.local" {
+			// The boot hook stages tools, launches services, and reports guest
+			// health; keep the narrower cap for the Yggdrasil helpers.
+			limit = 150
+		}
+		if code > limit {
 			t.Fatalf("%s too large for fragile boot script: %d code lines", script, code)
 		}
 		if match := regexp.MustCompile(`(?m)\s-[A-Za-z0-9_-]+=`).FindString(body); match != "" {
@@ -421,11 +433,9 @@ func TestYggBinariesInstallIndependently(t *testing.T) {
 	peers := read(t, "ygg-peers.rc")
 	mustContain(t, "ygg-peers.rc", peers, "pkg install yggdrasilctl")
 
-	// /lib/yggdrasil.peers is only bundled by the -ygg image build. Images
-	// without it (the fast 16MB base) still get the same file host-served at
-	// /n/host/boot, so ygg-peers must look there before giving up --
-	// otherwise it exits with "no peers file" and injects nothing.
-	mustContain(t, "ygg-peers.rc", peers, "/n/host/boot/yggdrasil.peers")
+	// The integration uses one known reachable peer, so a boot without a
+	// bundled peer list can still join the overlay.
+	mustContain(t, "ygg-peers.rc", peers, "PEER=tls://")
 }
 
 // TestYggConfPreservesNestedBraces guards a bug that made yggdrasil panic

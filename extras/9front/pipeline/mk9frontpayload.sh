@@ -5,6 +5,7 @@ out=${1:-local/halatha-9front-payload.iso}
 o9dir=${O9DIR:-../objective-9c}
 ygg_bin=${YGG_BIN:-local/yggdrasil-plan9-386/yggdrasil}
 yggctl_bin=${YGGCTL_BIN:-local/yggdrasil-plan9-386/yggdrasilctl}
+halctl_bin=${HALCTL_BIN:-local/halctl.386}
 work=${WORKDIR:-local/halatha-9front-payload}
 
 if ! command -v genisoimage >/dev/null 2>&1; then
@@ -15,6 +16,10 @@ fi
 release=$o9dir/release/386
 if ! test -d "$release"; then
 	echo "mk9frontpayload: o9 release not found at $release" >&2
+	exit 1
+fi
+if ! test -f "$halctl_bin"; then
+	echo "mk9frontpayload: halctl missing at $halctl_bin (set HALCTL_BIN)" >&2
 	exit 1
 fi
 
@@ -30,6 +35,7 @@ mkdir -p \
 	"$work/install"
 
 cp "$release/bin/o9c" "$work/386/bin/o9c"
+cp "$halctl_bin" "$work/386/bin/halctl"
 cp "$release/lib/libo9.a" "$work/386/lib/libo9.a"
 cp "$release/include/o9.h" "$work/sys/include/o9.h"
 cp "$release"/rc/o9* "$work/rc/bin/"
@@ -91,7 +97,7 @@ for(f in $src/sys/src/cmd/*)
 for(f in $src/sys/lib/o9/stdlib/*)
 	cpfile $f /sys/lib/o9/stdlib/`{basename $f}
 
-chmod +x /386/bin/o9c /rc/bin/o9* /rc/bin/halatha.local /rc/bin/ygg-up /rc/bin/ygg-peers
+chmod +x /386/bin/o9c /386/bin/halctl /rc/bin/o9* /rc/bin/halatha.local /rc/bin/ygg-up /rc/bin/ygg-peers
 if(test -e /386/bin/yggdrasil)
 	chmod +x /386/bin/yggdrasil
 if(test -e /386/bin/yggdrasilctl)
@@ -102,7 +108,7 @@ if(! grep -s 'halatha.local' /rc/bin/termrc){
 	echo '# halatha optional local boot hook' >>/rc/bin/termrc
 	echo 'if(test -r /n/host/boot/halatha.local)' >>/rc/bin/termrc
 	echo '	rc /n/host/boot/halatha.local &' >>/rc/bin/termrc
-	echo 'if not if(test -x /rc/bin/halatha.local)' >>/rc/bin/termrc
+	echo 'if(! test -r /n/host/boot/halatha.local && test -x /rc/bin/halatha.local)' >>/rc/bin/termrc
 	echo '	/rc/bin/halatha.local &' >>/rc/bin/termrc
 }
 
@@ -120,7 +126,7 @@ or:
 
   rc /n/cd/install/install-halatha.rc
 
-This installs o9c, o9 runtime files, Yggdrasil startup scripts, peers, and
+This installs halctl, o9c, o9 runtime files, Yggdrasil startup scripts, peers, and
 optional yggdrasil/yggdrasilctl binaries when YGG_BIN/YGGCTL_BIN were supplied
 while building the payload ISO.
 

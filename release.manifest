@@ -6,7 +6,18 @@
 # wanix.min.js loads its runtime relative to itself; the page's
 # <wanix-namespace debug> selects the debug build.
 dist/wanix.debug.wasm
+extras/9front/browser-timezone.mjs
 
-# ?state=copysh boots copy.sh's saved 9front state instead of the ISO.
-# Opt-in only: the default boot uses the ISO shipped in this release.
+# Prebuilt guest Objective-9C request client. The source and o9c toolchain
+# remain in the release/image so the guest can rebuild it on demand.
+extras/halatha/keyrequest/keyrequest.386
+
+# ?state=copysh boots copy.sh's saved 9front state instead of the installed
+# disk image shipped in this release.
 external https://i.copy.sh/9front_state-v3.bin.zst
+
+# Browser IPFS service fallback gateways.
+external https://4everland.io/ipfs/
+external https://ipfs.io/ipfs/
+external https://dweb.link/ipfs/
+external https://w3s.link/ipfs/

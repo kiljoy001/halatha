@@ -11,7 +11,7 @@ import { chromium } from "playwright";
 
 const args = process.argv.slice(2);
 const url = args.find(arg => !arg.startsWith("--")) ||
-    "http://127.0.0.1:7654/examples/basic-v86-9front-direct.html?iso=/local/9front-halatha-v9p.img&size=2147483648";
+    "http://127.0.0.1:7070/examples/basic-v86-9front-direct.html";
 const timeout = Number(args.find(arg => arg.startsWith("--timeout="))?.slice(10) || 200) * 1000;
 
 const browser = await chromium.launch({ args: ["--no-sandbox"] });

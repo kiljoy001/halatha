@@ -10,6 +10,24 @@
 #
 # Sourced from $home/lib/profile ahead of `exec rio`.
 
+# The browser writes a Plan 9 timezone table before boot/seed-ready. Source
+# it in the user's profile so Rio and every window inherit local time.
+if(test -d /n/host/boot){
+	tzseed=()
+	for(i in 1 2 3 4 5 6 7 8 9 10){
+		if(~ $#tzseed 0){
+			if(test -r /n/host/boot/timezone || test -f /n/host/boot/seed-ready)
+				tzseed=1
+			if(~ $#tzseed 0)
+				sleep 1
+		}
+	}
+	if(test -r /n/host/boot/timezone){
+		if(! cp /n/host/boot/timezone /env/timezone)
+			echo 'halatha: could not set browser timezone' >[1=2]
+	}
+}
+
 if(test -d /n/host/bin){
 	# libtab verification runs in the browser and can take a moment; wait
 	# briefly for its verdict. rc has no break, so guard the body instead.

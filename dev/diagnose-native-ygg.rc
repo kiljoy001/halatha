@@ -1,0 +1,45 @@
+#!/bin/rc
+# Run on 9front itself: rc diagnose-native-ygg.rc PEER_YGG_IP [HTTP_URL]
+# The packet-interface counters show whether traffic reaches the native TUN.
+if(~ $#* 0){
+	echo 'usage: rc diagnose-native-ygg.rc PEER_YGG_IP [HTTP_URL]' >[1=2]
+	exit usage
+}
+peer=$1
+ctl=()
+for(candidate in /usr/scott/bin/amd64/yggdrasilctl /386/bin/yggdrasilctl /bin/yggdrasilctl){
+	if(~ $#ctl 0 && test -x $candidate)
+		ctl=$candidate
+}
+if(~ $#ctl 0){
+	echo 'yggdrasilctl not found' >[1=2]
+	exit noctl
+}
+
+fn pktstatus {
+	for(d in /net/ipifc/[0-9]*){
+		if(grep -s '^device pkt' $d/status){
+			echo $d
+			cat $d/status
+		}
+	}
+}
+
+echo '=== self ==='
+$ctl getSelf
+echo '=== peers ==='
+$ctl getPeers
+echo '=== overlay route ==='
+grep -e '200::' /net/iproute
+echo '=== packet interface before ==='
+pktstatus
+echo '=== ICMP to peer ==='
+ip/ping -6 -n 3 $peer
+echo '=== packet interface after ==='
+pktstatus
+if(~ $#* 2){
+	echo '=== TCP HTTP fetch ==='
+	hget $2
+	echo '=== packet interface after TCP ==='
+	pktstatus
+}

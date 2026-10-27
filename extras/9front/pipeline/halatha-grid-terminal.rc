@@ -106,7 +106,7 @@ if(! grep -s 'halatha-net' /rc/bin/termrc){
 	echo '/rc/bin/halatha-host &' >>/rc/bin/termrc
 	echo 'if(test -r /n/host/boot/halatha.local)' >>/rc/bin/termrc
 	echo '	rc /n/host/boot/halatha.local &' >>/rc/bin/termrc
-	echo 'if not if(test -x /rc/bin/halatha.local)' >>/rc/bin/termrc
+	echo 'if(! test -r /n/host/boot/halatha.local && test -x /rc/bin/halatha.local)' >>/rc/bin/termrc
 	echo '	/rc/bin/halatha.local &' >>/rc/bin/termrc
 }
 

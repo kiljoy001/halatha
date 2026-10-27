@@ -1,76 +1,100 @@
-# 9front guest extras — host namespace bridge
+# 9front guest integration
 
-These files make a 9front (386) guest, booted under wanix/v86, mount the host
-namespace at `/n/host` over the original **9P2000** protocol.
+The default direct browser page is
+[`examples/basic-v86-9front-direct.html`](../../examples/basic-v86-9front-direct.html).
+It boots an installed 386 9front disk with the `9pchalatha` kernel. The
+kernel's `#9` virtio-9p device carries plain 9P2000 between v86 and the
+browser's `fs/p9p` namespace server. `/rc/bin/termrc.local` mounts that
+namespace at `/n/host` and starts the current browser-supplied
+`boot/halatha.local` after `boot/seed-ready` appears. Rio starts while the
+boot hook waits, and the installed hook remains available for offline boots.
 
-## How it fits together
+The kernel also includes `usbns`, a virtual USB host controller backed by
+the browser's WebUSB files. Boot-stage `usbd` would inherit a namespace
+without `/n/host`, so the image sets `nousbrc=1` and starts 9front's USB
+boot script from `termrc.local` after mounting the host. The installer moves
+the stock `nusbrc` call out of `termrc` to avoid starting it twice.
 
-The wanix host side is already in the repo:
+The page exposes the same browser services as the 9legacy direct page:
+clipboard, uploads and downloads, browser file pickers, WebUSB control files,
+fetch, IPFS, and the verified binary tree. It seeds the guest's rc tools on
+each boot. `halatha-bind` runs from glenda's profile before Rio starts so
+its command binds reach Rio windows.
 
-- `fs/p9p` — a 9P2000 server over a wanix `fs.FS` (serves the namespace).
-- `wasm/wasm.go` `_open9P2000` — starts `p9p.Serve` over a MessagePort for a
-  task's namespace.
-- `web/worker/worker.go` — hands the worker that port as `worker.p9p`.
-- `v86/main.go` (disk-boot path) — relays `serial1` to `worker.p9p`: 9legacy's
-  9P request frames on COM2 (`/dev/eia1`) → the kernel 9P2000 server; responses
-  → serial1.
+## Desktop startup and local time
 
-COM1 may carry boot/debug output in browser boots, so the Halatha image uses
-COM2 for a clean 9P bridge.
+Rio runs glenda's `riostart`, which opens the default stats and shell windows,
+then runs [`desktop.rc`](desktop.rc). The browser refreshes that script at
+`/n/host/boot/desktop.rc` on every boot; the image also has an installed copy
+for offline boots. Edit `desktop.rc` to change which applications start. It
+currently starts factotum's on-demand Rio prompt (`auth/fgui`) in the
+background and opens
+`games/catclock` and `bar`.
 
-This directory provides the 9front side:
+The page publishes the browser's timezone name and a Plan 9 timezone table at
+`/n/host/boot/timezone-name` and `/n/host/boot/timezone`. Glenda's profile
+copies the table to `/env/timezone` before starting Rio, so its windows and
+programs use the user's local time. It supports daylight transitions through
+2037; if a timezone needs more than the two offsets supported by Plan 9's
+table format, it uses the browser's current offset.
+The guest calls itself `halatha`. Its v86 RTC is UTC, so `termrc.local`
+refreshes `/dev/time` from that RTC every two seconds. This avoids stock
+`aux/timesync`'s local-RTC assumption and its slow correction of clock lag.
+`/env/timezone` selects how the accurate clock is displayed.
 
-- `serial9p.c` — opens `/dev/eia0`, posts it as `/srv/host` (inlines lib9p's
-  `postfd`, libc only), and stays alive holding the fd + `/srv` entry open.
-  The kernel then `mount -c /srv/host /n/host` and speaks 9P over the serial fd.
-- `mkfile` — build `serial9p` on 9front (386): `mk`.
-- `termrc.local` — run at boot: launch `serial9p`, then mount `/n/host`.
+The image includes `o9c`, `o9build`, its runtime library, headers, and
+standard library. In a Rio shell, create an `.o9` file and run `o9build`:
 
-## Remastering the 9front image
+```rc
+echo 'main { print("hello from o9c\n"); }' >/tmp/hello.o9
+o9build /tmp/hello.o9
+/tmp/hello
+```
 
-The Phase-1 example boots the upstream 9front 386 ISO as-is via v86's hard-disk
-path (`hda`, `boot=c`; the cdrom path reaches SeaBIOS but reports no bootable
-media in this v86 build). That gives VGA/rio with no host mount. To add the
-bridge, the guest image needs `serial9p` and `termrc.local` in its root
-filesystem. This requires a 9front build environment and can't be fully
-automated from Linux/Docker here; the steps are:
+## Build the browser disk
 
-1. Boot a 9front 386 instance (in v86 or QEMU) from the upstream ISO.
-2. Copy `serial9p.c` + `mkfile` into it and run `mk`, then
-   `cp serial9p /rc/bin/serial9p` (or `/bin/serial9p`).
-3. Install `termrc.local` as `/rc/bin/termrc.local` (termrc sources it if it
-   exists; if not, append the contents to the end of `/rc/bin/termrc`).
-4. Repack the modified root into a disk image and serve that as the wanix VM's
-   `hda` instead of the raw ISO.
+Start with an installed 9front disk as described in
+[`pipeline/README.md`](pipeline/README.md), then build the kernel and image:
 
-   The simplest route: run a proper `inst/begin` install to a fresh `hda`
-   image, then customize the installed system (step 2–3) and use that image.
-   `mk`-based ISO remastering (the dist tree under `/sys/src/cmd/install`) is
-   the alternative if you want a single bootable image.
+```sh
+python3 extras/9front/kernel/build-kernel.py local/9front-halatha-v9p13.img local/kernel-build-v9p20
+python3 extras/9front/pipeline/mk9frontimg.py \
+  local/kernel-build-v9p20/9pchalatha \
+  local/9front-halatha-v9p13.img \
+  local/9front-halatha-v9p20.img
+```
 
-5. Boot it under wanix:
-   ```html
-   <wanix-bind dst="#vm/v86" type="archive" src="…/v86.tgz"></wanix-bind>
-   <wanix-vm hda="https://your-host/9front-wanix.img"
-     acpi boot="c" mem="128M" screen start
-     style="width:100%;height:100%"></wanix-vm>
-   ```
-   From 9front rc: `ls /n/host` should list the wanix namespace.
+The image builder stages the boot hook, profile bind, and health check into
+9fat, installs them in a temporary QEMU boot, and writes the final boot
+configuration. It also installs `halctl` from `local/halctl.386` (or
+`HALCTL_BIN`). It refuses to overwrite an existing output image. The
+generated disk is 2 GiB logical size; serve it with HTTP Range support.
 
-The repeatable authoring path is captured in
-[`pipeline/README.md`](pipeline/README.md): create a raw target disk, install
-9front in QEMU, attach the Halatha payload ISO, run its installer, then serve
-the resulting raw disk to v86/CDN as `hda`.
+Open `/examples/basic-v86-9front-direct.html` to use the default image, or
+pass `?iso=/local/other.img&size=<bytes>` for a different installed disk.
+An upstream installer ISO can still be booted explicitly with `?iso=...`
+and its actual byte size; it has no Halatha host mount until customized.
 
-## Status / verification
+With `go run ./examples/serve.go` serving the checkout, run the guest
+smoke tests:
 
-- Host side (`fs/p9p`, kernel wiring, v86 serial relay): builds under js/wasm;
-  `fs/p9p` is unit-tested against a 9P2000 client (Stat, Readdir, Open/Read,
-  Create/Write/Read, Mkdir).
-- 9front side (`serial9p.c`, `termrc.local`): **not built or run here** — needs
-  a 9front environment and a remastered image. The `postfd` semantics are taken
-  from 9front lib9p's `post.c`/`srv.c`. Verify by booting the remastered image
-  and checking `ls /n/host` from 9front rc.
+```sh
+node dev/test-9front-virtio9p-e2e.mjs http://127.0.0.1:7070/examples/basic-v86-9front-direct.html
+node dev/test-clipboard-e2e.mjs http://127.0.0.1:7070/examples/basic-v86-9front-direct.html --local --page=examples/basic-v86-9front-direct.html
+node dev/test-9front-usb-e2e.mjs
+node dev/test-9front-keyrequest-e2e.mjs
+node dev/test-9front-desktop-e2e.mjs http://127.0.0.1:7070/examples/basic-v86-9front-direct.html Asia/Kathmandu
+```
+
+The USB test uses a synthetic WebUSB device to verify that a request goes
+from 9front's `usbd` through `usbns` and the browser service. Physical
+device behavior still depends on browser permissions and the device class.
+The keyrequest test supplies a local dummy endpoint and checks that the guest
+builds the Objective-9C client with the configured address. It does not send
+an access request.
+
+`serial9p.c` remains available for guests using the older serial bridge.
+The browser image above uses virtio-9p and does not need that helper.
 
 ## 9legacy (Plan 9 from Bell Labs, 386)
 

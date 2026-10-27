@@ -37,6 +37,8 @@ INSTALL = {
     "watch.rc": HERE.parent / "halatha-watch.rc",
     "usbboot.rc": HERE.parent / "usbboot.rc",
     "install-image.rc": HERE / "install-image.rc",
+    "install-coin.rc": HERE.parent / "coin/install-coin.rc",
+    "coin-up.rc": HERE.parent / "coin/coin-up.rc",
 }
 HALCTL = Path(os.environ.get("HALCTL_BIN", REPO / "local/halctl.386"))
 NINEPMOUNT = Path(os.environ.get("NINEPMOUNT_BIN", REPO / "local/9pmount.386"))
