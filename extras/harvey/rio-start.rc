@@ -1,0 +1,5 @@
+#!/bin/rc
+# Rio startup (genuine plan9front Rio): first rc window + snarf bridge.
+# Rio -i runs this script windowless; the wctl window is the shell.
+echo 'new -r 520 40 980 320 rc' > /dev/wctl
+snarfbridge &

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aspera · Halatha</title>
+<style>
+html,body{margin:0;background:#17191d;color:#d9dce2;font:14px system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:16px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+h1{font-size:18px;margin:0}#status{font-size:13px;color:#b0bac7}
+p{font-size:13px;color:#b0bac7}details{margin-top:16px}#serial{white-space:pre-wrap;background:#0b0d10;padding:12px;max-height:280px;overflow:auto;font:12px monospace}
+#vga{margin-top:12px}#vga canvas{width:100%;max-width:1024px;background:#000;cursor:none}
+</style>
+</head>
+<body><main>
+<header><h1>Aspera</h1><span id="status" role="status">Loading guest…</span></header>
+<p>Click the display to capture your mouse (Esc releases it); all three buttons work in Rio. Notes and clipboard are kept in this browser under /n/host.</p>
+<p>Drag a title bar to move its window. Ctrl+O edits the file path, Enter opens it, and Ctrl+S saves. Escape cancels path editing.</p>
+<p><button id="paste" type="button">Paste browser clipboard into Rio</button> <button id="copy" type="button">Copy Rio snarf to browser clipboard</button></p>
+<details><summary>Boot console</summary><pre id="serial"></pre></details>
+<div id="vga"><div></div><canvas></canvas></div>
+</main>
+<script type="module">
+import { V86 } from '../v64/lib/libv86.mjs';
+import { NineP2000 } from '../extras/harvey/js9p2000.js';
+const status = document.querySelector('#status'), serial = document.querySelector('#serial');
+const log = text => { serial.textContent = (serial.textContent + text).slice(-100000); };
+try {
+  const fs = new NineP2000();
+  fs.mkdir('mnt/o9', true); fs.mkdir('mnt/shelf', true); fs.mkdir('mnt/temp'); fs.mkdir('mnt/wsys', true);
+  fs.mkdir('mnt/shelf/view', true); fs.addFile('mnt/shelf/view/protocol', 'o9shelf 1\n');
+  fs.mkdir('lib/aspera', true);
+  const noteKey = 'halatha.aspera.note.v1';
+  let saved = '';
+  try { saved = localStorage.getItem(noteKey) || ''; } catch {}
+  fs.addFile('lib/aspera/note.txt', saved, { writable: true, mode: 0o600,
+    changed: node => { try { localStorage.setItem(noteKey, new TextDecoder().decode(node.data)); } catch { status.textContent = 'Notes storage unavailable'; } },
+  });
+  // #9 (virtio-9p) host gateway: clipboard text under /n/host/clip/text.
+  const clipKey = 'halatha.clip.text.v1';
+  let clipSaved = '';
+  try { clipSaved = localStorage.getItem(clipKey) || ''; } catch {}
+  fs.mkdir('clip', true);
+  fs.addFile('clip/text', clipSaved || 'clip\n', { writable: true, mode: 0o600,
+    changed: node => { try { localStorage.setItem(clipKey, new TextDecoder().decode(node.data)); } catch {} },
+  });
+  fs.addFile('clip/seen', '', { writable: true, mode: 0o600 }); fs.addFile('clip/abort.log', '', { writable: true, mode: 0o600 });
+  const setHostClip = text => {
+    const node = fs.lookup('clip/text');
+    node.data = new TextEncoder().encode(text);
+    node.version++;
+    if (!fs.lookup('clip/inbox.new')) fs.addFile('clip/inbox.new', '', { writable: true, mode: 0o600 });
+    const inbox = fs.lookup('clip/inbox.new');
+    inbox.data = new TextEncoder().encode(text);
+    inbox.version++;
+    try { localStorage.setItem(clipKey, text); } catch {}
+  };
+  document.querySelector('#paste').addEventListener('click', async () => {
+    try { setHostClip(await navigator.clipboard.readText()); status.textContent = 'Clipboard sent to Rio'; }
+    catch { status.textContent = 'Browser clipboard unavailable'; }
+  });
+  document.querySelector('#copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(new TextDecoder().decode(fs.lookup('clip/text')?.data || new Uint8Array())); status.textContent = 'Rio snarf copied'; }
+    catch { status.textContent = 'Browser clipboard unavailable'; }
+  });
+  const fonts = ['unicode.9.font', 'latin1.9', 'latineur.9', 'ipa.9', 'greek.9', 'genpunc.9', 'supsub.9', 'currency.9', 'cyrillic.9'];
+  const files = ['boot/boot', 'bin/rio', 'bin/aspera-live', 'bin/aspera-shelf-service', 'bin/rc', 'bin/echo', 'bin/test', 'bin/ls', 'bin/cat', 'bin/sleep', 'bin/rm', 'bin/snarfbridge',
+    'bin/basename', 'bin/cal', 'bin/chmod', 'bin/cleanname', 'bin/cmp', 'bin/comm', 'bin/cp', 'bin/dd', 'bin/du', 'bin/mkdir', 'bin/mv', 'bin/seq', 'bin/sort', 'bin/tail', 'bin/tar', 'bin/tee', 'bin/tr', 'bin/uniq', 'bin/wc',
+    'rc/lib/rcmain', 'lib/aspera/start.rc', 'tmp/.keep',
+    ...fonts.map(f => 'lib/font/bit/lucm/' + f)];
+  await Promise.all(files.map(async file => {
+    const response = await fetch('../local/aspera/rootfs/' + file);
+    if (!response.ok) throw Error(`Missing guest file ${file}; run python3 extras/harvey/build_aspera.py`);
+    fs.addFile(file, await response.arrayBuffer());
+  }));
+  status.textContent = 'Booting Aspera…';
+  const vm = new V86({
+    disable_jit: new URLSearchParams(location.search).has('interpreter'),
+    wasm_path: '../v64/lib/v86.wasm', graphics_adapter: 'bochs_vga', cpu_type: 'x86_64',
+    acpi: true, memory_size: 512 * 1024 * 1024,
+    bios: { url: '../v64/bios/seabios.bin' }, vga_bios: { url: '../v64/bios/vgabios.bin' },
+    multiboot: { url: '../local/aspera/harvey.32bit' },
+    cmdline: 'bootargs=local!#~/host nobootprompt=local',
+    filesystem: { handle9p: (req, reply) => fs.handle(req, reply) },
+    net_device: { type: 'virtio' }, screen_container: document.querySelector('#vga'),
+    autostart: true, disable_speaker: true,
+  });
+  window.emulator = vm;
+  window.aspera = { fs, setHostClip };
+  // Click in: capture the mouse so only the VM (Plan 9) cursor is
+  // seen. The host cursor is hidden over the display via CSS, and
+  // pointer lock makes v86 deliver relative motion; Esc releases.
+  const vgaCanvas = document.querySelector('#vga canvas');
+  document.querySelector('#vga').addEventListener('click', () => {
+    if (document.pointerLockElement !== vgaCanvas)
+      vgaCanvas.requestPointerLock?.();
+  });
+  vm.add_listener('serial0-output-byte', b => {
+    log(String.fromCharCode(b));
+    if (/panic:|ASPERA-LIVE FAIL/.test(serial.textContent)) status.textContent = 'Boot failed — see console';
+  });
+  vm.add_listener('emulator-error', e => { status.textContent = 'VM error'; log('\n' + (e?.message || e)); });
+} catch (e) { status.textContent = 'Could not start Aspera'; log(e.stack || String(e)); }
+</script>
+</body>
+</html>

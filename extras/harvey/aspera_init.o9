@@ -1,0 +1,83 @@
+function raw_desktop() int64 {
+    c {
+        char *rargv[] = {"rio", "-t", "-s", "-i", "rc /lib/aspera/start.rc", nil};
+        char *aargv[] = {"aspera-live", nil};
+        char *value;
+        int fd;
+        if(bind("#c", "/dev", MAFTER) < 0 ||
+           bind("#d", "/dev", MAFTER) < 0 ||
+           bind("#d", "/fd", MREPL) < 0 ||
+           bind("#p", "/proc", MREPL) < 0 ||
+           bind("#s", "/srv", MREPL|MCREATE) < 0 ||
+           bind("#ec", "/env", MREPL) < 0 ||
+           bind("#e", "/env", MCREATE|MAFTER) < 0 ||
+           bind("#@", "/mnt/o9", MREPL|MCREATE) < 0){
+            sysfatal("halatha: desktop namespace: %r");
+        }
+        /* #9 (virtio-9p) is the /n/host browser gateway; / stays the guest root. */
+        bind("#9", "/dev", MAFTER);
+        fd = open("#9/0", ORDWR);
+        if(fd >= 0){
+            if(mount(fd, -1, "/n/host", MREPL|MCREATE, "") >= 0)
+                print("halatha: mounted #9/0 at /n/host\n");
+            else
+                print("halatha: mount /n/host failed: %r\n");
+            close(fd);
+        } else if(bind("/", "/n/host", MREPL) >= 0) {
+            /* Root already attached via #9: bind it as the host gateway. */
+            print("halatha: bound / at /n/host\n");
+        } else {
+            print("halatha: /n/host unavailable: %r\n");
+        }
+        /* #~ (9ring) stays bound for high-speed display/input streaming. */
+        bind("#~", "/dev", MAFTER);
+        /* Draw (#i) and mouse (#m) for Rio's /dev/draw and /dev/mouse. */
+        bind("#i", "/dev", MAFTER);
+        bind("#m", "/dev", MAFTER);
+        /* The staged root is not writable; give /tmp to the RAM
+           device (#@) so shells and tools can create files. */
+        if(bind("#@", "/tmp", MREPL|MCREATE) < 0)
+            print("halatha: /tmp ram bind failed: %r\n");
+        else
+            print("halatha: /tmp on ram device\n");
+        /* Enable PS/2 streaming + intellimouse wheel packets. */
+        fd = open("/dev/mousectl", OWRITE);
+        if(fd >= 0){
+            write(fd, "ps2intellimouse", 15);
+            close(fd);
+        }
+        chdir("/");
+        /* Rio's title status reads these from the process environment. */
+        value = getenv("user");
+        if(value == nil || value[0] == 0)
+            putenv("user", getuser());
+        free(value);
+        value = getenv("sysname");
+        if(value == nil || value[0] == 0)
+            putenv("sysname", "aspera");
+        free(value);
+        print("halatha: starting Rio\n");
+        {
+            int pid = rfork(RFPROC|RFFDG|RFENVG);
+            if(pid == 0){
+                exec("/bin/rio", rargv);
+                _exits("rio exec failed");
+            }
+            if(pid > 0){
+                Waitmsg *w = wait();
+                print("halatha: Rio exited (%s); falling back to Aspera\n",
+                    w != nil ? w->msg : "?");
+                free(w);
+            }
+        }
+        exec("/bin/aspera-live", aargv);
+        sysfatal("halatha: exec desktop: %r");
+    }
+    return 0;
+}
+
+main {
+    print("\nHalatha / Rio on v64\n");
+    Task<int64> desktop = spawn raw_desktop();
+    desktop.await();
+}
