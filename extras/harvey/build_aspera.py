@@ -43,21 +43,30 @@ def main():
         runtime_obj = Path(tmp) / "o9_runtime.o"
         subprocess.run([prism.CC, *prism.CFLAGS, '-DMONO_PLAN9',
                         str(runtime), '-o', str(runtime_obj)], check=True)
+        welcome_resize_obj = Path(tmp) / "welcome_resize.o"
+        subprocess.run([prism.CC, *prism.CFLAGS, str(here / 'welcome_resize.c'),
+                        '-o', str(welcome_resize_obj)], check=True)
         for source, destination in (
             (here / "aspera_init.o9", "boot/boot"),
             (source_dir / "shelf_service.o9", "bin/aspera-shelf-service"),
+            (source_dir / "welcome.o9", "bin/welcome"),
         ):
             generated, obj = Path(tmp) / "guest.c", Path(tmp) / "guest.o"
             target = root / destination
             target.parent.mkdir(parents=True, exist_ok=True)
             with generated.open("w") as output:
                 subprocess.run([prism.O9C_BIN, str(source)], stdout=output, check=True)
-            generated.write_text(generated_source(generated.read_text()))
+            text = generated_source(generated.read_text())
+            if source.name == 'welcome.o9':
+                text = text.replace('#include <o9.h>', '#include <o9.h>\n#include <draw.h>\n#include <event.h>', 1)
+            generated.write_text(text)
             shutil.copy2(generated, out / ('generated-' + source.stem + '.c'))
             subprocess.run([prism.CC, *prism.CFLAGS, '-include', str(here / 'aspera_exec.h'), f"-I{source.parent}",
                             str(generated), "-o", str(obj)], check=True)
             libs = [lib for lib in prism.LIBS if Path(lib).is_file()]
-            subprocess.run([prism.LD, *prism.LDFLAGS, str(obj), str(runtime_obj), str(exec_obj), *libs,
+            extra = [str(welcome_resize_obj)] if source.name == 'welcome.o9' else []
+            subprocess.run([prism.LD, *prism.LDFLAGS, str(obj), str(runtime_obj),
+                            str(exec_obj), *extra, *libs,
                             "-o", str(target)], check=True)
             print(f"Built {destination}", flush=True)
 
