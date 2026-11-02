@@ -151,16 +151,24 @@ gesture; the guest keypress that writes the control file supplies it.
 
 ## Network relay
 
-The guest's NE2000 NIC carries Ethernet frames through v86's Wisp adapter;
-`halavps` only proxies the TCP streams (`/net`) and needs no session token.
-A loopback listener
-(`-addr 127.0.0.1:...`, the normal deployment behind Caddy) proxies any
-public unicast address, so the guest can reach the internet. A relay bound to
-a non-loopback address keeps the private-range default.
+The guest's NIC is carried by v86's Wisp adapter. The relay is a **Wanix
+task**, not a bespoke server: `wanix wisp` runs a WebSocket-to-TCP relay and
+Caddy exposes it at `/wisp`, so the page uses `wisps://<host>/wisp`.
 
-`HALAVPS_NET_ALLOW` overrides both: a comma-separated CIDR list restricts the
-relay to those networks, and `any` allows everything. Loopback, link-local
-and the cloud metadata address are always refused.
+A browser cannot open raw TCP itself, so the relay must run in a process with
+sockets. To keep it off the VPS, run the same Wanix task locally:
+
+```sh
+wanix wisp --listen 127.0.0.1:8098
+```
+
+and load the page with `?relay=wisp://127.0.0.1:8098/`. Serve the page over
+`http` (an https page cannot open `ws://127.0.0.1`), or give the local relay a
+trusted `wss` certificate. Without a local relay the page falls back to the
+same-origin `/wisp`.
+
+`halavps` still has its older `/net` relay for local experiments, but the page
+no longer uses it.
 
 ## Guest images
 

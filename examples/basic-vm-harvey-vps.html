@@ -51,8 +51,8 @@ const assetBase = deployed ? "/vps-test/" : "../";
 // ?relay= override points the page at a local one.
 const relayOverride = new URLSearchParams(location.search).get("relay");
 const netBase = relayOverride || (deployed
-  ? `wisps://${location.host}/vps-net`
-  : "wisp://127.0.0.1:8099/net");
+  ? `wisps://${location.host}/wisp`
+  : "wisp://127.0.0.1:8098/");
 
 // Bump when the image changes. The server marks these immutable so a reload
 // reads them from the browser cache instead of the WAN.
