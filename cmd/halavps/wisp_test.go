@@ -18,6 +18,8 @@ func TestWispAllowPolicy(t *testing.T) {
 		{"local blocks loopback", "127.0.0.1:8099", "", "127.0.0.1", false},
 		{"local blocks metadata", "127.0.0.1:8099", "", "169.254.169.254", false},
 		{"public bind denies public", "0.0.0.0:8099", "", "1.1.1.1", false},
+		{"wildcard bind denies public", ":8099", "", "1.1.1.1", false},
+		{"ipv6 loopback allows public", "[::1]:8099", "", "1.1.1.1", true},
 		{"public bind allows private", "0.0.0.0:8099", "", "10.0.0.5", true},
 		{"explicit list wins", "127.0.0.1:8099", "10.0.0.0/8", "1.1.1.1", false},
 		{"explicit any", "0.0.0.0:8099", "any", "1.1.1.1", true},

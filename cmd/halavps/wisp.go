@@ -47,8 +47,12 @@ func listenIsLocal(addr string) bool {
 	if err != nil {
 		host = addr
 	}
-	if host == "" || host == "localhost" {
+	if host == "localhost" {
 		return true
+	}
+	if host == "" {
+		/* ":port" listens on every interface. */
+		return false
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
