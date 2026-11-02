@@ -101,9 +101,12 @@ factotum + libsec ──> ssh, sshfs, sshnet  (9front-only source)
 
 Networking is not usable until the guest also has `/net` mounted, an ndb
 configuration, and a packet backend. The backend is platform-specific:
-virtio-net under a VM, gmac/wifi on the SBC, Wisp in the browser. Those are
-tracked separately from the binary ports. Apps in the posix class go through
-APEX sockets and the same underlay.
+virtio-net under a VM, gmac/wifi on the SBC, Wisp in the browser. In the
+browser the Wisp relay itself runs in the v86 worker (`v86/lib/wisp-browser.js`,
+selected with `relay="wisp://browser"`), so guest traffic never leaves the
+page; it services streams with `fetch`. Those are tracked separately from the
+binary ports. Apps in the posix class go through APEX sockets and the same
+underlay.
 
 ## Ledger
 

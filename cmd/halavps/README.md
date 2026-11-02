@@ -151,22 +151,20 @@ gesture; the guest keypress that writes the control file supplies it.
 
 ## Network
 
-The guest network runs in the page. v86's `fetch` backend answers DHCP, ARP,
-DNS and ICMP itself, and carries guest TCP over the browser's own `fetch`. No
-relay is involved and no guest packet goes to the VPS: the server only serves
-the static page, images and assets.
+The guest network runs in the page. DHCP, ARP, DNS and ICMP are answered by
+v86's Wisp adapter, and the Wisp **relay runs in the same browser worker**
+(`v86/lib/wisp-browser.js`): it services each stream with the browser's own
+`fetch`, replaying the guest's HTTP request with its Host header and following
+redirects. The page selects it with `relay="wisp://browser"`; there is no
+server relay, no configuration, and no guest packet goes to the VPS — the
+server only serves the static page, images and assets.
 
-The trade-off is that guest TCP becomes HTTP(S) over `fetch` and is subject to
-CORS; arbitrary TCP needs a Wisp relay running somewhere with real sockets.
-That relay is optional and belongs on the user's machine, not the VPS:
-
-```sh
-wanix wisp --listen 127.0.0.1:8098
-```
-
-Load the page with `?relay=wisp://127.0.0.1:8098/` (serve the page over `http`,
-or give the local relay a trusted `wss` certificate, to avoid mixed content).
-The page never falls back to a server-side relay.
+Because a browser has no raw TCP, a stream is HTTP(S) over `fetch` and is
+subject to CORS; TLS and non-HTTP ports cannot be replayed and are closed.
+`?relay=fetch` selects v86's older fetch adapter, and
+`?relay=wisp://host:port` points at an external relay (for example
+`wanix wisp --listen 127.0.0.1:8098` on the user's own machine). The page
+never falls back to a server-side relay.
 
 ## Guest images
 

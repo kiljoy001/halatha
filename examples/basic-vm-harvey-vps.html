@@ -45,13 +45,14 @@ const setStatus = (text, isError = false) => {
 };
 const deployed = location.pathname === "/" || location.pathname === "/index.html";
 const assetBase = deployed ? "/vps-test/" : "../";
-// The guest network runs in the page: v86's fetch backend answers
-// DHCP/ARP/DNS/ICMP and carries TCP over the browser's own fetch. No
-// relay, and no guest traffic to the VPS — the server only hosts static
-// images and assets. ?relay=wisp://host:port can point at a relay running
-// on the user's own machine when raw TCP is needed.
+// The Wisp relay runs in the page: v86's Wisp adapter hands its frames to
+// an in-worker relay (v86/lib/wisp-browser.js), which services each stream
+// with the browser's own fetch. DHCP/ARP/DNS/ICMP are answered in the page
+// too. No guest traffic goes to the VPS — it only serves static assets.
+// ?relay=fetch selects v86's older fetch adapter, ?relay=wisp://host:port
+// an external relay.
 const relayOverride = new URLSearchParams(location.search).get("relay");
-const netBase = relayOverride || "fetch";
+const netBase = relayOverride || "wisp://browser";
 
 // Bump when the image changes. The server marks these immutable so a reload
 // reads them from the browser cache instead of the WAN.
@@ -104,7 +105,7 @@ try {
 
 document.querySelector("#app").innerHTML = `
 <wanix-namespace id="ns">
-  <wanix-bind dst="#vm/v86" src="${assetBase}v86/v86.tgz?v=v64-vps3" type="archive"></wanix-bind>
+  <wanix-bind dst="#vm/v86" src="${assetBase}v86/v86.tgz?v=v64-vps5" type="archive"></wanix-bind>
   <wanix-vm id="harvey"
       multiboot="${kernelURL}"
       initrd="${initrdURL}"
