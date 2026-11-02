@@ -136,10 +136,13 @@ be a native build, needs APEX, or needs a namespace/9P bridge.
 `#I` and `#l` under `/net`, then runs `/lib/aspera/net.rc`, which does DHCP,
 starts the resolver and the connection server.
 
-The browser link is the v86 virtio-net adapter with a Wisp TCP relay
-(`netdev="virtio"`). DHCP, DNS, `cs` and TCP were verified under 9vm against
-the same kernel and image (`util/9vm/9vm -initrd build/aspera-vps.gefs ...`);
-9vm now loads a multiboot initrd so the real VPS boot path runs locally.
+The browser link uses v86's NE2000 (`netdev="ne2k"`, Realtek 8029) and a
+tokenless Wisp TCP relay.  v86's i440fx virtio-net publishes all PCI
+capability offsets as zero, so a modern virtio driver cannot locate its
+common/notify/ISR registers; the ported `ether8390`/`ether2000` driver is the
+supported path.  DHCP, DNS (`cs` -> `dns` -> v86 DoH), ARP and ICMP were
+verified in the browser; 9vm uses virtio and the same kernel/image boots the
+real VPS path locally via `util/9vm/9vm -initrd build/aspera-vps.gefs ...`.
 
 ## Known Harvey/9front deltas
 

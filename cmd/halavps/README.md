@@ -151,7 +151,7 @@ gesture; the guest keypress that writes the control file supplies it.
 
 ## Network relay
 
-The guest's virtio NIC carries Ethernet frames through v86's Wisp adapter;
+The guest's NE2000 NIC carries Ethernet frames through v86's Wisp adapter;
 `halavps` only proxies the TCP streams (`/net`) and needs no session token.
 A loopback listener
 (`-addr 127.0.0.1:...`, the normal deployment behind Caddy) proxies any
