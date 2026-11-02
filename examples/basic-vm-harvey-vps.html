@@ -45,12 +45,15 @@ const setStatus = (text, isError = false) => {
 };
 const deployed = location.pathname === "/" || location.pathname === "/index.html";
 const assetBase = deployed ? "/vps-test/" : "../";
-// v86's "fetch" backend runs the whole network in the page: it answers
-// DHCP/ARP/DNS and carries TCP over the browser's fetch (HTTP(S), CORS
-// permitting). No server relay is involved. ?relay= can still select a
-// Wisp relay (wisp://host:port) when one is available.
+// Raw TCP still has to be dialed by a process with sockets, so the guest's
+// TCP goes through a Wisp relay: the `wanix wisp` task, exposed at /wisp.
+// DHCP, ARP and DNS stay in the page. ?relay=fetch selects v86's fully
+// in-page backend instead (HTTP(S) over fetch, subject to CORS), and
+// ?relay=wisp://host:port points at a different relay.
 const relayOverride = new URLSearchParams(location.search).get("relay");
-const netBase = relayOverride || "fetch";
+const netBase = relayOverride || (deployed
+  ? `wisps://${location.host}/wisp`
+  : "wisp://127.0.0.1:8098/");
 
 // Bump when the image changes. The server marks these immutable so a reload
 // reads them from the browser cache instead of the WAN.
