@@ -151,28 +151,22 @@ gesture; the guest keypress that writes the control file supplies it.
 
 ## Network
 
-The guest NIC uses v86's Wisp adapter. DHCP, ARP, DNS and ICMP are answered in
-the page; TCP is carried over a Wisp WebSocket to a relay, because a browser
-cannot open raw TCP itself.
+The guest network runs in the page. v86's `fetch` backend answers DHCP, ARP,
+DNS and ICMP itself, and carries guest TCP over the browser's own `fetch`. No
+relay is involved and no guest packet goes to the VPS: the server only serves
+the static page, images and assets.
 
-The relay is a **Wanix task**, not a bespoke server:
+The trade-off is that guest TCP becomes HTTP(S) over `fetch` and is subject to
+CORS; arbitrary TCP needs a Wisp relay running somewhere with real sockets.
+That relay is optional and belongs on the user's machine, not the VPS:
 
 ```sh
 wanix wisp --listen 127.0.0.1:8098
 ```
 
-On the VPS it runs as `wanix-wisp.service` and Caddy exposes it at `/wisp`, so
-the page uses `wisps://<host>/wisp`. To keep guest TCP off the VPS, run the
-same task locally and load the page with
-`?relay=wisp://127.0.0.1:8098/` (serve the page over `http`, or give the local
-relay a trusted `wss` certificate, to avoid mixed content).
-
-`?relay=fetch` selects v86's fully in-page backend instead: TCP then becomes
-HTTP(S) over `fetch` and is subject to CORS, so arbitrary TCP does not work,
-but no relay is involved.
-
-Verified end to end: the guest dials `104.20.23.154!80` through `/net/tcp`,
-sends an HTTP request, and reads the response through the relay.
+Load the page with `?relay=wisp://127.0.0.1:8098/` (serve the page over `http`,
+or give the local relay a trusted `wss` certificate, to avoid mixed content).
+The page never falls back to a server-side relay.
 
 ## Guest images
 
