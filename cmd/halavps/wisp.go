@@ -4,8 +4,13 @@ package main
 //
 // The v86 Wisp adapter carries Ethernet frames, answers DHCP/ARP and
 // resolves DNS through DoH; this server only proxies the resulting TCP
-// streams. It is deliberately not an open proxy: a single-use session token
-// is required, and destinations must match the configured allowlist.
+// streams. A single-use session token is always required.
+//
+// When the relay listens on a loopback address it is only reachable through
+// the local web server and proxies any unicast destination, so the guest can
+// reach the public internet. HALAVPS_NET_ALLOW still overrides that with an
+// explicit CIDR list. A relay bound to a non-loopback address keeps the
+// private-range default: there it really is a proxy others can reach.
 
 import (
 	"encoding/binary"
@@ -32,29 +37,54 @@ const (
 type wispServer struct {
 	server *server
 	allow  []*net.IPNet
+	open   bool
 }
 
-func newWispServer(s *server) *wispServer {
+// listenIsLocal reports whether addr is a loopback listener. Such a relay is
+// only reachable through the web server in front of it.
+func listenIsLocal(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func newWispServer(s *server, listenAddr string) *wispServer {
 	w := &wispServer{server: s}
-	for _, raw := range strings.Split(os.Getenv("HALAVPS_NET_ALLOW"), ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
+	raw := strings.TrimSpace(os.Getenv("HALAVPS_NET_ALLOW"))
+	if raw == "any" || raw == "all" || raw == "*" {
+		w.open = true
+		return w
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
 			continue
 		}
-		if _, n, err := net.ParseCIDR(raw); err == nil {
+		if _, n, err := net.ParseCIDR(part); err == nil {
 			w.allow = append(w.allow, n)
 		}
 	}
-	if len(w.allow) == 0 {
-		for _, raw := range []string{
-			"10.0.0.0/8",
-			"172.16.0.0/12",
-			"192.168.0.0/16",
-			"100.64.0.0/10",
-		} {
-			_, n, _ := net.ParseCIDR(raw)
-			w.allow = append(w.allow, n)
-		}
+	if len(w.allow) > 0 {
+		return w
+	}
+	if listenIsLocal(listenAddr) {
+		w.open = true
+		return w
+	}
+	for _, raw := range []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"100.64.0.0/10",
+	} {
+		_, n, _ := net.ParseCIDR(raw)
+		w.allow = append(w.allow, n)
 	}
 	return w
 }
@@ -65,9 +95,12 @@ func (w *wispServer) allowed(ip net.IP) bool {
 		ip.IsMulticast() {
 		return false
 	}
-	// Never expose cloud metadata or the VPS itself through loopback.
+	// Never expose cloud metadata through the relay.
 	if ip.Equal(net.ParseIP("169.254.169.254")) {
 		return false
+	}
+	if w.open {
+		return true
 	}
 	for _, n := range w.allow {
 		if n.Contains(ip) {

@@ -144,6 +144,18 @@ sees at `/n/host`:
 The pickers and WebUSB need Chromium/Edge, HTTPS (or localhost), and a user
 gesture; the guest keypress that writes the control file supplies it.
 
+## Network relay
+
+The guest's virtio NIC carries Ethernet frames through v86's Wisp adapter;
+`halavps` only proxies the TCP streams (`/net`). A loopback listener
+(`-addr 127.0.0.1:...`, the normal deployment behind Caddy) proxies any
+public unicast address, so the guest can reach the internet. A relay bound to
+a non-loopback address keeps the private-range default.
+
+`HALAVPS_NET_ALLOW` overrides both: a comma-separated CIDR list restricts the
+relay to those networks, and `any` allows everything. Loopback, link-local
+and the cloud metadata address are always refused.
+
 ## Notes
 
 - The GEFS image should be 160 MiB or larger. The page uses `mem="1G"` so the

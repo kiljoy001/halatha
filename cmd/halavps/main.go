@@ -42,7 +42,7 @@ func main() {
 	flag.Parse()
 
 	srv := &server{tokens: newTokenStore(*ttl)}
-	srv.wisp = newWispServer(srv)
+	srv.wisp = newWispServer(srv, *addr)
 	log.Printf("halavps: addr=%s token-ttl=%s", *addr, *ttl)
 	log.Fatal(http.ListenAndServe(*addr, srv.mux()))
 }
