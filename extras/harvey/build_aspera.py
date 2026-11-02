@@ -81,6 +81,25 @@ def main():
                         "-o", str(root / "bin/aspera-live")], check=True)
         print("Built bin/aspera-live (native C Lola + Rio compositor)", flush=True)
 
+        # Build Objective-9c compiler (o9c) for the in-guest development environment
+        o9c_type_obj = Path(tmp) / "o9c_type.o"
+        o9c_tab_obj = Path(tmp) / "o9c_tab.o"
+        o9_repo = Path(prism.O9_REPO)
+        subprocess.run([prism.CC, *prism.CFLAGS, f"-I{o9_repo}/o9c",
+                        str(o9_repo / "o9c/o9_type.c"), "-o", str(o9c_type_obj)], check=True)
+        subprocess.run([prism.CC, *prism.CFLAGS, f"-I{o9_repo}/o9c",
+                        str(o9_repo / "o9c/y.tab.c"), "-o", str(o9c_tab_obj)], check=True)
+        subprocess.run([prism.LD, *prism.LDFLAGS, str(o9c_tab_obj), str(o9c_type_obj),
+                        str(repo / "build/libbio.a"), str(repo / "build/libc.a"),
+                        "-o", str(root / "bin/o9c")], check=True)
+        print("Built bin/o9c (Objective-9c compiler)", flush=True)
+
+        # Stage Objective-9c sample sources into guest rootfs
+        (root / "sys/src").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_dir / "welcome.o9", root / "sys/src/welcome.o9")
+        (root / "home").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_dir / "welcome.o9", root / "home/welcome.o9")
+
         # Build genuine plan9front Rio (copied into Harvey sys/src/cmd/rio)
         # as bin/rio. The Plan 9 C anonymous embedding in these sources is
         # compiled with gcc's -fplan9-extensions (the plan9port compiler),
