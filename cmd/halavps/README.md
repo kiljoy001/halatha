@@ -149,26 +149,17 @@ sees at `/n/host`:
 The pickers and WebUSB need Chromium/Edge, HTTPS (or localhost), and a user
 gesture; the guest keypress that writes the control file supplies it.
 
-## Network relay
+## Network
 
-The guest's NIC is carried by v86's Wisp adapter. The relay is a **Wanix
-task**, not a bespoke server: `wanix wisp` runs a WebSocket-to-TCP relay and
-Caddy exposes it at `/wisp`, so the page uses `wisps://<host>/wisp`.
+The guest NIC uses v86's **`fetch` backend**, which runs the network in the
+page: DHCP, ARP, DNS and ICMP are answered by the adapter, and TCP is carried
+over the browser's `fetch`. No server relay is involved, so the VPS only
+serves images and assets.
 
-A browser cannot open raw TCP itself, so the relay must run in a process with
-sockets. To keep it off the VPS, run the same Wanix task locally:
-
-```sh
-wanix wisp --listen 127.0.0.1:8098
-```
-
-and load the page with `?relay=wisp://127.0.0.1:8098/`. Serve the page over
-`http` (an https page cannot open `ws://127.0.0.1`), or give the local relay a
-trusted `wss` certificate. Without a local relay the page falls back to the
-same-origin `/wisp`.
-
-`halavps` still has its older `/net` relay for local experiments, but the page
-no longer uses it.
+The trade-off is that guest TCP is HTTP(S) over `fetch` and therefore subject
+to CORS; arbitrary TCP needs a Wisp relay. `?relay=wisp://host:port` selects
+one when available (for example a local `wanix wisp --listen 127.0.0.1:8098`,
+with the page served over `http` or given a trusted local `wss` certificate).
 
 ## Guest images
 
