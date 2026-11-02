@@ -43,10 +43,10 @@ export class VMElement extends WanixElement {
         const args = [];
         // other than export, these all map to qemu cli flags.
         // append is put in env because of shell quoting limitations atm
-        const urlAttrs = new Set(["hda", "hdb", "fda", "fdb", "cdrom", "bios", "kernel", "initrd"]);
+        const urlAttrs = new Set(["hda", "hdb", "fda", "fdb", "cdrom", "bios", "kernel", "initrd", "multiboot"]);
         [
             "export", "mem", "vga-mem", "hda", "hdb", "fda", "fdb", "cdrom",
-            "boot", "bios", "acpi", "fastboot", "kernel", "initrd", "netdev", "relay", "virtfs",
+            "boot", "bios", "acpi", "fastboot", "kernel", "initrd", "multiboot", "cpu", "netdev", "relay", "virtfs",
             "webgl-screen",
         ].forEach((attr) => {
             if (this.hasAttribute(attr) || (attr === "webgl-screen" && new URLSearchParams(location.search).get("webgl-screen") === "1")) {

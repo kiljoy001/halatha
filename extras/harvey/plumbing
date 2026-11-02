@@ -1,0 +1,10 @@
+# Open directories in vdir and ordinary files in rio's text editor.
+type is text
+data matches .+
+arg isdir $data
+plumb start rio-open $dir
+
+type is text
+data matches .+
+arg isfile $data
+plumb start rio-open $file

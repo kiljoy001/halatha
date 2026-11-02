@@ -5,8 +5,10 @@ import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from guest_compat import runtime_source, generated_source
+from build_fonts import build_fonts
 
 
 def main():
@@ -14,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harvey-repo", type=Path, default=here.parents[2] / "harvey")
     parser.add_argument("--out", type=Path, default=here.parents[1] / "local/aspera")
+    parser.add_argument("--ttf-font", type=Path)
     args = parser.parse_args()
     repo, out = args.harvey_repo.resolve(), args.out.resolve()
     root = out / "rootfs"
@@ -21,6 +24,7 @@ def main():
     spec = importlib.util.spec_from_file_location("prism", repo / "util/9vm/prism.py")
     prism = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(prism)
+    font_draw = build_fonts(repo, out, prism, args.ttf_font)
     # Compile with Harvey's flags and archives, keeping all build output here.
     with tempfile.TemporaryDirectory(prefix="aspera-build-", dir=out) as tmp:
         source_dir = Path(tmp) / 'source'
@@ -93,13 +97,29 @@ def main():
                         str(repo / "sys/src/libcomplete/complete.c"),
                         "-o", str(complete_obj)], check=True)
         rio_objs.append(str(complete_obj))
+        # The caret fix lives in libframe too. Compile the frame sources here
+        # so rebuilding Rio cannot silently retain an old libframe archive.
+        for source in sorted((repo / "sys/src/libframe").glob("fr*.c")):
+            obj = Path(tmp) / f"frame-{source.stem}.o"
+            subprocess.run([prism.CC, *prism.CFLAGS, str(source), "-o", str(obj)], check=True)
+            rio_objs.append(str(obj))
         subprocess.run([prism.LD, *prism.LDFLAGS, *rio_objs,
-                        str(repo / "build/libdraw.a"), str(repo / "build/libmemdraw.a"),
-                        str(repo / "build/libframe.a"), str(repo / "build/libthread.a"),
+                        str(font_draw), str(repo / "build/libmemdraw.a"),
+                        str(repo / "build/libthread.a"),
                         str(repo / "build/libplumb.a"),
                         str(repo / "build/libc.a"),
                         "-o", str(root / "bin/rio")], check=True)
         print("Built bin/rio (9front Rio window manager)", flush=True)
+
+        subprocess.run(["python3", str(repo / "util/9vm/build_vdir.py"),
+                        "--out", str(root / "bin/vdir"),
+                        "--draw", str(font_draw)], check=True)
+
+        open_obj = Path(tmp) / "rio-open.o"
+        subprocess.run([prism.CC, *prism.CFLAGS, str(repo / "sys/src/cmd/rio-open.c"),
+                        "-o", str(open_obj)], check=True)
+        subprocess.run([prism.LD, *prism.LDFLAGS, str(open_obj),
+                        str(repo / "build/libc.a"), "-o", str(root / "bin/rio-open")], check=True)
 
         bridge_obj = Path(tmp) / "snarfbridge.o"
         subprocess.run([prism.CC, *prism.CFLAGS, str(here / "snarfbridge.c"), "-o", str(bridge_obj)], check=True)
@@ -109,21 +129,57 @@ def main():
     for name in ("rc", "echo", "test", "ls", "cat", "sleep", "rm",
                  "basename", "cal", "chmod", "cleanname", "cmp", "comm",
                  "cp", "dd", "du", "mkdir", "mv", "seq", "sort", "tail",
-                 "tar", "tee", "tr", "uniq", "wc"):
+                 "tar", "tee", "tr", "uniq", "wc",
+                 # extended 9front set
+                 "bind", "unmount", "sum", "crc32", "read", "pwd", "touch",
+                 "ns", "strings", "factor", "primes", "dc", "lnfs",
+                 "md5sum", "mount", "srv",
+                 # second-tier text and inspection tools
+                 "grep", "sed", "diff", "chgrp", "p", "fmt", "split", "look",
+                 "ascii", "unicode", "col", "pr", "ps", "time", "xd", "mtime",
+                 # crypto library known-answer self-test
+                 "mctest",
+                 # libtab table store: tests and command
+                 "tabtest", "tabcryptest", "tab",
+                 # third-tier core tools
+                 "ed", "sam", "mk", "yacc", "patch",
+                 "gzip", "gunzip", "zip", "unzip",
+                 "iostats", "swap", "srvfs", "ramfs", "mntgen",
+                 # fourth-tier core tools
+                 "awk", "bzip2", "bunzip2", "plumb", "plumber",
+                 # ndb: connection server, resolver, query tools
+                 "cs", "csquery", "dnsquery", "ipquery", "dns",
+                 "ipconfig", "ping",
+                 # userspace TPM2 driver
+                 "tpmfs", "tpmtest"):
         shutil.copy2(repo / f"build/aspera-{name}", root / "bin" / name)
     (root / "tmp").mkdir(parents=True, exist_ok=True)
     (root / "tmp/.keep").write_bytes(b"")  # mount point for the ram /tmp
+    # Rio's window filesystem needs a scratch mount point (cexecpipe binds
+    # #| at /mnt/temp) and a wsys mount point. The standalone page created
+    # these in its in-memory VFS; the archive rootfs must carry them too.
+    for d in ("mnt/temp", "mnt/wsys", "mnt/plumb", "n/host/clip"):
+        (root / d).mkdir(parents=True, exist_ok=True)
     (root / "rc/lib").mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "rc/lib/rcmain", root / "rc/lib/rcmain")
     (root / "lib/aspera").mkdir(parents=True, exist_ok=True)
     shutil.copy2(here / "rio-start.rc", root / "lib/aspera/start.rc")
+    shutil.copy2(here / "plumbing", root / "lib/aspera/plumbing")
+    (root / "n/host/note.txt").touch()
+    (root / "lib/ndb").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(here / "ndb-local", root / "lib/ndb/local")
     font_dst = root / "lib/font/bit/lucm"
     font_dst.mkdir(parents=True, exist_ok=True)
     for font in (repo / "lib/font/bit/lucm").iterdir():
         if font.is_file():
             shutil.copy2(font, font_dst / font.name)
     shutil.copy2(repo / "build/harvey.32bit", out / "harvey.32bit")
-    print(f"Staged browser guest in {out}")
+    # Archive of the staged rootfs for <wanix-vm multiboot> pages: the VM's
+    # 9P root is its task namespace, so the archive is bound (union) at ".".
+    tarpath = out / "rootfs.tar.gz"
+    with tarfile.open(tarpath, "w:gz") as tf:
+        tf.add(root, arcname=".")
+    print(f"Staged browser guest in {out} (rootfs archive {tarpath.name})")
 
 
 if __name__ == "__main__":

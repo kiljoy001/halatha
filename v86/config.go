@@ -34,6 +34,10 @@ func parseFlags(args []string) (map[string]any, error) {
 		initrd string
 		append string
 
+		// Multiboot options
+		multiboot string
+		cpu       string
+
 		// Network options
 		netdev string
 		relay  string
@@ -57,6 +61,8 @@ func parseFlags(args []string) (map[string]any, error) {
 	f.StringVar(&boot, "boot", "c", "Boot order (a,b,c,d,n)")
 	f.StringVar(&kernel, "kernel", "", "Linux kernel image (bzImage)")
 	f.StringVar(&initrd, "initrd", "", "Initial ramdisk image")
+	f.StringVar(&multiboot, "multiboot", "", "Multiboot kernel image (e.g. Plan 9)")
+	f.StringVar(&cpu, "cpu", "", "CPU type: x86, x86_64, arm64")
 	f.StringVar(&append, "append", "", "Kernel command line")
 	f.StringVar(&bios, "bios", "", "BIOS image file")
 	f.BoolVar(&acpi, "acpi", false, "Enable ACPI")
@@ -82,8 +88,11 @@ func parseFlags(args []string) (map[string]any, error) {
 	diskBoot := kernel == "" && (hda != "" || hdb != "" || fda != "" || fdb != "" || cdrom != "")
 
 	cfg := map[string]any{
-		"memory_size":     memorySize,
-		"vga_memory_size": 8 * 1024 * 1024, // 8MB
+		"memory_size": memorySize,
+		"vram_size":   8 * 1024 * 1024, // 8MB
+		// v86 2025+ makes the display adapter explicit. bochs_vga is the
+		// VGA device every earlier v86 build had by default.
+		"graphics_adapter": "bochs_vga",
 	}
 	if diskBoot {
 		// Keep serial0 available for boot/console chatter; Halatha's host 9P
@@ -177,6 +186,23 @@ func parseFlags(args []string) (map[string]any, error) {
 		if initrd != "" {
 			cfg["initrd"] = diskOption(initrd)
 		}
+	}
+
+	// Multiboot path: a Plan 9 style kernel with an optional cmdline,
+	// booted with the host 9P filesystem as its root.
+	if multiboot != "" {
+		cfg["multiboot"] = diskOption(multiboot)
+		if initrd != "" {
+			// v86 passes initrd to the multiboot loader as a module.
+			cfg["initrd"] = diskOption(initrd)
+		}
+		if cpu != "" {
+			cfg["cpu_type"] = cpu
+		}
+		if append != "" {
+			cfg["cmdline"] = append
+		}
+		cfg["_mbboot"] = true
 	}
 
 	// Sentinel consumed by main.go to pick the boot path; not a v86 option.

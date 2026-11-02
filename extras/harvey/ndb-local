@@ -1,0 +1,13 @@
+# /lib/ndb/local -- minimal VPS session configuration.
+#
+# The browser/VM link supplies DHCP.  ipconfig writes the live address,
+# gateway and DNS servers to /net/ndb; cs and dns read that first.  Keep
+# this file small and add static names only when they must resolve before
+# DHCP.
+#
+# Fallback for the v86 Wisp link when DHCP is unavailable:
+#   ip=10.0.2.15
+#   ipmask=255.255.255.0
+#   ipgw=10.0.2.2
+#   dns=10.0.2.3
+dom=local

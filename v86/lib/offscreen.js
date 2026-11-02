@@ -61,7 +61,14 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
         paused = false,
 
         // Update interval in ms (roughly 60fps)
-        update_interval = 16;
+        update_interval = 16,
+
+        // Pixel backend (v86's "presenter" interface). Defaults to a
+        // canvas2d backend drawing into the OffscreenCanvas.
+        backend = null,
+
+        // Scratch ImageData for incoming framebuffer layers.
+        layer_image_data = null;
 
     const FLAG_BLINKING = 0x01;
     const FLAG_FONT_PAGE_B = 0x02;
@@ -75,6 +82,10 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
 
     this.init = function()
     {
+        if(!backend)
+        {
+            this.use_canvas2d();
+        }
         this.set_size_text(80, 25);
         this.timer();
     };
@@ -316,22 +327,139 @@ export function OffscreenScreenAdapter(canvas, screen_fill_buffer)
     {
         if(gl_renderer && is_graphical)
         {
-            gl_renderer.update(layers);
+            gl_renderer.update(layers.map(normalizeLayer));
             return;
         }
-        for(const layer of layers)
+        for(const raw of layers)
         {
-            graphic_context.putImageData(
-                layer.image_data,
-                layer.screen_x - layer.buffer_x,
-                layer.screen_y - layer.buffer_y,
-                layer.buffer_x,
-                layer.buffer_y,
-                layer.buffer_width,
-                layer.buffer_height
-            );
+            const layer = normalizeLayer(raw);
+            if(!layer || !layer.image_data)
+            {
+                continue;
+            }
+            drawLayer(layer.image_data, layer.buffer_x, layer.buffer_y, layer.buffer_width, layer.buffer_height, layer.screen_x, layer.screen_y);
         }
     };
+
+    /**
+     * v86 frame layers are either {image_data, ...} (older) or
+     * {pixels: {data, width, height}, ...} (v86 2025+). Normalise both.
+     */
+    function normalizeLayer(layer)
+    {
+        if(!layer)
+        {
+            return null;
+        }
+        if(!layer.image_data && layer.pixels)
+        {
+            const p = layer.pixels;
+            const data = p.data;
+            if(!(data instanceof ImageData))
+            {
+                if(!layer_image_data || layer_image_data.width !== p.width || layer_image_data.height !== p.height)
+                {
+                    layer_image_data = new ImageData(p.width, p.height);
+                }
+                layer_image_data.data.set(data);
+                layer.image_data = layer_image_data;
+            }
+            else
+            {
+                layer.image_data = data;
+            }
+        }
+        return layer;
+    }
+
+    function drawLayer(img, buffer_x, buffer_y, buffer_width, buffer_height, screen_x, screen_y)
+    {
+        if(backend && typeof backend.put_pixels === "function")
+        {
+            backend.put_pixels(img.data, img.width, img.height, buffer_x, buffer_y, buffer_width, buffer_height, screen_x, screen_y);
+            return;
+        }
+        graphic_context.putImageData(img, screen_x - buffer_x, screen_y - buffer_y, buffer_x, buffer_y, buffer_width, buffer_height);
+    }
+
+    /**
+     * v86 2025+ screen interface: the emulator drives a pluggable pixel
+     * backend instead of reading the VGA buffer itself.
+     */
+    this.set_backend = function(new_backend)
+    {
+        backend = new_backend;
+        if(backend && typeof backend.resize === "function")
+        {
+            backend.resize(backing_canvas.width, backing_canvas.height);
+        }
+    };
+
+    this.use_canvas2d = function()
+    {
+        this.set_backend({
+            context: graphic_context,
+            attach_presenter: function() {},
+            resize: function(width, height)
+            {
+                graphic_context.imageSmoothingEnabled = false;
+            },
+            put_pixels: function(data, width, height, buffer_x, buffer_y, buffer_width, buffer_height, screen_x, screen_y)
+            {
+                let img = layer_image_data;
+                if(!img || img.width !== width || img.height !== height)
+                {
+                    img = layer_image_data = new ImageData(width, height);
+                }
+                img.data.set(data);
+                graphic_context.putImageData(img, screen_x - buffer_x, screen_y - buffer_y, buffer_x, buffer_y, buffer_width, buffer_height);
+            },
+            clear: function()
+            {
+                graphic_context.fillStyle = "#000";
+                graphic_context.fillRect(0, 0, current_canvas.width, current_canvas.height);
+            },
+            present: function() {},
+            screenshot: function()
+            {
+                return createImageBitmap(current_canvas);
+            },
+        });
+    };
+
+    this.claim_canvas = function(_type)
+    {
+        return current_canvas;
+    };
+
+    this.invalidate = function()
+    {
+        if(text_mode_dirty)
+        {
+            text_mode_dirty.fill(1);
+        }
+    };
+
+    this.is_graphical = function()
+    {
+        return is_graphical;
+    };
+
+    this.get_graphics_canvas = function()
+    {
+        return backing_canvas;
+    };
+
+    // Graphics-adapter plugin hooks. The built-in bochs VGA does not use
+    // these, but the interface expects them to exist.
+    this.time_since_vblank = function()
+    {
+        return 0;
+    };
+
+    this.add_source = function() {};
+
+    this.add_timer = function() {};
 
     this.get_text_screen = function()
     {

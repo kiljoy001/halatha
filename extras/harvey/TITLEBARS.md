@@ -7,9 +7,25 @@ its output; opening a file selects Text mode; cancelling title input restores
 the previous mode. A failed save preserves the buffer and dirty state for a
 retry. The path-directory helper also now allocates space for its terminator.
 
+Title selection is routed to the title frame, and dragging is disabled while
+that frame is being edited. Its opaque background clears old text; its text
+rectangle reserves space for the mode and user/host status. Closing a file
+restores terminal mode.
+
+The prompt/scroll artifact investigation found two rendering errors below Rio:
+Harvey's packed alpha multiplier rounded only one of its two 16-bit lanes,
+and the Bochs framebuffer incorrectly advertised an alpha channel. Correcting
+both permits normal caret drawing in libframe again. Backspace no longer
+launches asynchronous completion, and Backspace/Ctrl+U stop at an empty prompt
+instead of erasing shell output. Backspace and forward deletion remove a
+selected range without also deleting an adjacent character.
+
 Run `node dev/test-rio-titlebars.mjs` against the guest served on port 7072.
 The test uses real keyboard/mouse input, checks file contents through the host
 9P gateway, and writes screenshots to `/tmp/rio-titlebars-*.png`.
+It also compares canvas pixels after prompt deletion and keyboard/wheel scroll
+cycles. `python3 dev/test-harvey-alpha.py` checks the actual packed-alpha macros
+against scalar rounding for every alpha value and pair of channel values.
 
 The reference implementation is under
 `/home/scott/Repo/plan9front/sys/src/cmd/rio`. Its `mkfile` builds `inf`.

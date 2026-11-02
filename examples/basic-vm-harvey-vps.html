@@ -1,0 +1,183 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Harvey VPS session</title>
+<style>
+html,body{margin:0;height:100%;background:#111;color:#ccc;font:13px ui-monospace,monospace}
+wanix-vm{display:block;width:100vw;height:100vh;background:#000}
+#status{position:fixed;left:0;right:0;bottom:28px;text-align:center;font:14px ui-monospace,monospace;color:#ddd;text-shadow:0 1px 3px #000;pointer-events:none;padding:0 16px}
+#status.error{color:#f88}
+</style>
+</head>
+<body>
+<!--
+  Harvey boots from an immutable GEFS image plus a VPS session namespace:
+
+      initrd      GEFS image, loaded by v86 as a multiboot module. The guest
+                  maps it writable, so GEFS writes stay in RAM and the image
+                  file is never modified.
+      ram/        browser-local ramfs (home, tmp, var, n)
+      host/       browser-local service tree (clip, uploads, downloads, usb)
+
+  The kernel boots with gefsroot=1, runs the embedded /boot/gefsinit, starts
+  GEFS on /dev/initrd, pivots / to it, mounts the session at /vps, and binds
+  ram/ over the writable branches. The guest keeps no state on the server;
+  files leave through the browser's save picker/download or WebUSB.
+
+  The images are fetched here, on the page thread, and handed to v86 as blob
+  URLs. v86's own loader reads module images with an XHR inside the worker
+  while the wasm/JIT is coming up; on a WAN that drops a 256 MB module from
+  ~10 s to several minutes. A blob URL is already in browser memory, so the
+  worker only copies it into guest RAM.
+
+  A fresh single-use token is issued per page load; the WebSocket consumes it.
+-->
+<div id="app"></div>
+<div id="status">Opening session…</div>
+<script type="module">
+const statusEl = document.querySelector("#status");
+const setStatus = (text, isError = false) => {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("error", isError);
+};
+const deployed = location.pathname === "/" || location.pathname === "/index.html";
+const assetBase = deployed ? "/vps-test/" : "../";
+const tokenURL = deployed ? "/vps-token" : "http://127.0.0.1:8099/token";
+const wsBase = deployed
+  ? `wss://${location.host}/vps-session`
+  : "ws://127.0.0.1:8099/session";
+// v86 selects its Wisp adapter from the wisps:// (or wisp://) scheme;
+// passing wss:// here silently selects a different backend.
+const netBase = deployed
+  ? `wisps://${location.host}/vps-net`
+  : "wisp://127.0.0.1:8099/net";
+
+// Bump when the image changes. The server marks these immutable so a reload
+// reads them from the browser cache instead of the WAN.
+const IMAGE_VERSION = "20261031-4";
+const KERNEL_VERSION = "20261031-4";
+const gefsPath = `local/aspera/aspera-vps.gefs?v=${IMAGE_VERSION}`;
+const kernelPath = `local/aspera/harvey-vps.32bit?v=${KERNEL_VERSION}`;
+
+let token, netToken;
+try {
+  // One single-use token per channel: 9P for the namespace, one for the
+  // Wisp TCP relay. Neither can be replayed.
+  const [sessionResp, netResp] = await Promise.all([
+    fetch(tokenURL, { cache: "no-store" }),
+    fetch(tokenURL, { cache: "no-store" }),
+  ]);
+  if (!sessionResp.ok || !netResp.ok) {
+    throw new Error(`token request: HTTP ${sessionResp.status}/${netResp.status}`);
+  }
+  token = (await sessionResp.json()).token;
+  netToken = (await netResp.json()).token;
+} catch (err) {
+  setStatus(`Could not open a VPS session: ${err.message || err}`, true);
+  throw err;
+}
+
+// Fetch an image with progress and turn it into a blob URL for v86.
+async function preload(path, label) {
+  const resp = await fetch(assetBase + path, { cache: "default" });
+  if (!resp.ok) throw new Error(`${path}: HTTP ${resp.status}`);
+  const total = Number(resp.headers.get("content-length")) || 0;
+  const chunks = [];
+  let loaded = 0;
+  if (resp.body) {
+    const reader = resp.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.byteLength;
+      if (total) {
+        setStatus(`Loading ${label}… ${Math.round(100 * loaded / total)}%`);
+      }
+    }
+  } else {
+    const buf = await resp.arrayBuffer();
+    chunks.push(new Uint8Array(buf));
+    loaded = buf.byteLength;
+  }
+  const blob = new Blob(chunks, { type: "application/octet-stream" });
+  chunks.length = 0;
+  const url = URL.createObjectURL(blob);
+  console.log(`vps: preloaded ${label} (${loaded} bytes)`);
+  return url;
+}
+
+setStatus("Session granted; loading the desktop…");
+let initrdURL = `${assetBase}${gefsPath}`;
+let kernelURL = `${assetBase}${kernelPath}`;
+try {
+  initrdURL = await preload(gefsPath, "desktop image");
+  kernelURL = await preload(kernelPath, "kernel");
+} catch (err) {
+  // Fall back to v86's own loader; correct, just much slower over the WAN.
+  console.warn("vps: image preload failed, falling back to direct URLs:", err);
+  setStatus("Could not preload images; falling back to the slow loader…");
+}
+
+document.querySelector("#app").innerHTML = `
+<wanix-namespace id="ns">
+  <wanix-bind dst="#vm/v86" src="${assetBase}v86/v86.tgz?v=v64-vps3" type="archive"></wanix-bind>
+  <wanix-vm id="harvey"
+      multiboot="${kernelURL}"
+      initrd="${initrdURL}"
+      cpu="x86_64"
+      acpi
+      mem="1G"
+      screen start
+      relay="${netBase}?token=${encodeURIComponent(netToken)}"
+      append="bootargs=local!#9/0 nobootprompt=local gefsroot=1"
+      style="width:100%;height:100%">
+    <wanix-bind dst="." type="import" transport="websocket" protocol="9P2000"
+        src="${wsBase}?token=${encodeURIComponent(token)}"></wanix-bind>
+    <!-- The writable data plane is browser memory. The server only supplies
+         the clean session root; these local ramfs binds shadow its ram/ and
+         host/ mount points. -->
+    <wanix-bind dst="ram" src="#ramfs/new"></wanix-bind>
+    <wanix-bind dst="host" src="#ramfs/new"></wanix-bind>
+  </wanix-vm>
+</wanix-namespace>`;
+
+try {
+  await import(assetBase + "dist/wanix.js");
+} catch (err) {
+  setStatus(`Could not load the Wanix runtime: ${err.message || err}`, true);
+  throw err;
+}
+const { startVPServices } = await import(assetBase + "extras/halatha/vps-services.js");
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const started = Date.now();
+setStatus("Starting Harvey — the first boot can take a few minutes…");
+const vm = document.querySelector("#harvey");
+
+// The guest writes host/ready after it binds /n/host, before Rio starts.
+// Waiting for that marker keeps the service pollers from competing with the
+// boot-time 9P traffic.
+const dec = new TextDecoder();
+for (let i = 0; i < 600; i++) {
+  const root = vm.task && vm.task.taskRoot;
+  if (root) {
+    try {
+      if (dec.decode(await root.readFile("host/ready")).trim() === "ready") {
+        setStatus("Guest ready");
+        setTimeout(() => statusEl.remove(), 1500);
+        startVPServices(root, { status: (m) => console.log("vps:", m) });
+        break;
+      }
+    } catch (_) {}
+  }
+  if (i % 5 === 0) {
+    const secs = Math.round((Date.now() - started) / 1000);
+    setStatus(`Starting Harvey — the first boot can take a few minutes… (${secs}s)`);
+  }
+  await sleep(1000);
+}
+</script>
+</body>
+</html>

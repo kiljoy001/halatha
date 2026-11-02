@@ -1,7 +1,8 @@
 import { chromium } from 'playwright';
 import { writeFileSync } from 'node:fs';
 
-const url = process.argv[2] || 'http://127.0.0.1:7072/examples/basic-v64-aspera.html?test';
+const promptOnly = process.argv.includes('--prompt-only');
+const url = process.argv.slice(2).find(arg => !arg.startsWith('--')) || 'http://127.0.0.1:7072/examples/basic-v64-aspera.html?test';
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1100, height: 1000 } });
 const errors = [];
@@ -53,6 +54,12 @@ const windowLeft = () => page.evaluate(() => {
   }
   return -1;
 });
+const bodyPixels = () => page.locator('#vga canvas').evaluate(c => Array.from(c.getContext('2d').getImageData(480, 128, 475, 285).data));
+const changedPixels = (a, b) => {
+  let n = 0;
+  for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++;
+  return n;
+};
 
 try {
   await page.goto(url);
@@ -75,87 +82,156 @@ try {
   await waitFile('clip/seen', 'titlebar-shell\n');
   console.log('Shell input with title bars: PASS');
 
-  const beforeMove = await windowLeft();
-  await point(700, 54);
-  await buttons(true);
-  await pause(300);
-  for (let i = 0; i < 4; i++) { await move(-15, 15); await pause(150); }
-  await buttons(false);
-  await pause(1200);
-  const afterMove = await windowLeft();
-  await grab('dragged');
-  if (beforeMove - afterMove < 30) throw Error(`Title drag did not move the window: ${beforeMove} -> ${afterMove}`);
-  await command('echo dragged > /n/host/clip/seen');
-  await waitFile('clip/seen', 'dragged\n');
-  console.log('Title-bar drag and shell input after move: PASS');
-  await command("echo 'resize -r 460 100 960 420' > /dev/wctl");
-  await command('echo resized > /n/host/clip/seen');
-  await waitFile('clip/seen', 'resized\n');
-  const resized = await page.locator('#vga canvas').evaluate(c => Array.from(c.getContext('2d').getImageData(940, 400, 1, 1).data));
-  if (resized[0] < 200 || resized[1] < 200 || resized[2] < 200) throw Error('Window content did not expand on resize');
-  console.log('Title-bar window resize: PASS');
+  if (!promptOnly) {
+    const beforeMove = await windowLeft();
+    await point(700, 54);
+    await buttons(true);
+    await pause(300);
+    for (let i = 0; i < 4; i++) { await move(-15, 15); await pause(150); }
+    await buttons(false);
+    await pause(1200);
+    const afterMove = await windowLeft();
+    await grab('dragged');
+    if (beforeMove - afterMove < 30) throw Error(`Title drag did not move the window: ${beforeMove} -> ${afterMove}`);
+    await command('echo dragged > /n/host/clip/seen');
+    await waitFile('clip/seen', 'dragged\n');
+    console.log('Title-bar drag and shell input after move: PASS');
+    await command("echo 'resize -r 460 100 960 420' > /dev/wctl");
+    await command('echo resized > /n/host/clip/seen');
+    await waitFile('clip/seen', 'resized\n');
+    const resized = await page.locator('#vga canvas').evaluate(c => Array.from(c.getContext('2d').getImageData(940, 400, 1, 1).data));
+    if (resized[0] < 200 || resized[1] < 200 || resized[2] < 200) throw Error('Window content did not expand on resize');
+    console.log('Title-bar window resize: PASS');
 
-  await page.evaluate(() => window.aspera.fs.addFile('clip/title-source', 'original\n', { writable: true, mode: 0o600 }));
-  await page.keyboard.press('Control+o');
-  await pause(500);
-  await page.keyboard.press('Control+a');
-  await page.keyboard.press('Control+k');
-  await text('/n/host/clip/title-source');
-  await grab('path');
-  await page.keyboard.press('Enter');
-  await pause(1000);
-  await grab('opened');
-  await page.keyboard.press('Control+End');
-  await text('edited');
-  await page.keyboard.press('Enter');
-  await pause(500);
-  await grab('edited');
-  await page.keyboard.press('Control+s');
-  await waitFile('clip/title-source', 'original\nedited\n');
-  console.log('Title path open, edit and Ctrl+S file save: PASS');
-  // Cancelling a title edit must preserve the file and its editing mode.
-  await page.keyboard.press('Control+o');
-  await page.keyboard.press('Control+a');
-  await page.keyboard.press('Control+k');
-  await text('/cancel-this-path');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Control+b');
-  await text('cancelled');
-  await page.keyboard.press('Enter');
-  await page.keyboard.press('Control+s');
-  await waitFile('clip/title-source', 'original\nedited\ncancelled\n');
-  console.log('Escape cancels title editing and preserves file mode: PASS');
+    await page.evaluate(() => window.aspera.fs.addFile('clip/title-source', 'original\n', { writable: true, mode: 0o600 }));
+    await page.keyboard.press('Control+o');
+    await pause(500);
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Control+k');
+    await text('/n/host/clip/title-source');
+    await grab('path');
+    await page.keyboard.press('Enter');
+    await pause(1000);
+    await grab('opened');
+    await page.keyboard.press('Control+End');
+    await text('edited');
+    await page.keyboard.press('Enter');
+    await pause(500);
+    await grab('edited');
+    await page.keyboard.press('Control+s');
+    await waitFile('clip/title-source', 'original\nedited\n');
+    console.log('Title path open, edit and Ctrl+S file save: PASS');
+    // Cancelling a title edit must preserve the file and its editing mode.
+    await page.keyboard.press('Control+o');
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Control+k');
+    await text('/cancel-this-path');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+b');
+    await text('cancelled');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Control+s');
+    await waitFile('clip/title-source', 'original\nedited\ncancelled\n');
+    console.log('Escape cancels title editing and preserves file mode: PASS');
 
-  // A failed save must not append an error/path to the document or clear dirty state.
-  await page.evaluate(() => { window.aspera.fs.lookup('clip/title-source').writable = false; });
-  await text('pending');
-  await page.keyboard.press('Enter');
-  await page.keyboard.press('Control+s');
-  await pause(1000);
-  if (await hostText('clip/title-source') !== 'original\nedited\ncancelled\n') throw Error('Failed save changed the host file');
-  await page.evaluate(() => { window.aspera.fs.lookup('clip/title-source').writable = true; });
-  await page.keyboard.press('Control+s');
-  await waitFile('clip/title-source', 'original\nedited\ncancelled\npending\n');
-  console.log('Failed save preserves edits for retry: PASS');
-  await pause(500);
-  await point(600, 114);
-  await buttons(true); await pause(70); await buttons(false); await pause(100);
-  await buttons(true); await pause(70); await buttons(false); await pause(500);
-  await grab('doubleclick');
-  await text('discard-title-edit');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Control+s');
+    // A failed save must not append an error/path to the document or clear dirty state.
+    await page.evaluate(() => { window.aspera.fs.lookup('clip/title-source').writable = false; });
+    await text('pending');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Control+s');
+    await pause(1000);
+    if (await hostText('clip/title-source') !== 'original\nedited\ncancelled\n') throw Error('Failed save changed the host file');
+    await page.evaluate(() => { window.aspera.fs.lookup('clip/title-source').writable = true; });
+    await page.keyboard.press('Control+s');
+    await waitFile('clip/title-source', 'original\nedited\ncancelled\npending\n');
+    console.log('Failed save preserves edits for retry: PASS');
+    await pause(500);
+    await point(600, 114);
+    await buttons(true); await pause(70); await buttons(false); await pause(100);
+    await buttons(true); await pause(70); await buttons(false); await pause(500);
+    await grab('doubleclick');
+    await text('discard-title-edit');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+s');
+    await pause(700);
+    await waitFile('clip/title-source', 'original\nedited\ncancelled\npending\n');
+    console.log('Double-click edits the title without changing the document: PASS');
+    await grab('saved');
+    // Closing the file returns this window to its attached shell.
+    await page.keyboard.press('Control+q');
+    await pause(500);
+    await command('echo back-to-shell > /n/host/clip/seen');
+    await waitFile('clip/seen', 'back-to-shell\n');
+    console.log('File close returns to a working shell: PASS');
+  } else {
+    await command("echo 'resize -r 460 100 960 420' > /dev/wctl");
+  }
+  await point(10, 10);
   await pause(700);
-  await waitFile('clip/title-source', 'original\nedited\ncancelled\npending\n');
-  console.log('Double-click edits the title without changing the document: PASS');
-  await grab('saved');
+  const promptPixels = await bodyPixels();
+  const scratch = 'delete-me-1234567890';
+  await text(scratch);
+  for (const ch of scratch) { await page.keyboard.press('Backspace'); await pause(70); }
+  await pause(700);
+  await grab('backspace');
+  const backspaceDiff = changedPixels(promptPixels, await bodyPixels());
+  if (backspaceDiff !== 0) throw Error(`Backspace left ${backspaceDiff} changed prompt pixels`);
+  console.log('Backspace restores prompt pixels without artifacts: PASS');
+  await text('delete this entire input line');
+  await page.keyboard.press('Control+u');
+  await pause(700);
+  await grab('ctrl-u');
+  const clearDiff = changedPixels(promptPixels, await bodyPixels());
+  if (clearDiff !== 0) throw Error(`Ctrl+U left ${clearDiff} changed prompt pixels`);
+  console.log('Ctrl+U restores prompt pixels without artifacts: PASS');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Control+u');
+  await pause(700);
+  await grab('empty-prompt');
+  if (changedPixels(promptPixels, await bodyPixels()) !== 0) throw Error('Deletion at an empty prompt erased shell output');
+  console.log('Deletion at an empty prompt preserves shell output: PASS');
+  await text('abcd');
+  await page.keyboard.press('Control+a');
+  for (let i = 0; i < 4; i++) await page.keyboard.press('Control+d');
+  await pause(700);
+  await grab('forward-delete');
+  if (changedPixels(promptPixels, await bodyPixels()) !== 0) throw Error('Forward deletion left prompt artifacts');
+  console.log('Forward deletion restores prompt pixels: PASS');
+
+  await command('seq 1 90');
+  await pause(1000);
+  const bottom = await bodyPixels();
+  await page.keyboard.press('PageUp'); await pause(600);
+  const up = await bodyPixels();
+  if (changedPixels(bottom, up) < 100) throw Error('PageUp did not scroll the history');
+  await page.keyboard.press('PageDown'); await pause(600);
+  await grab('page-cycle');
+  const pageDiff = changedPixels(bottom, await bodyPixels());
+  if (pageDiff !== 0) throw Error(`PageUp/PageDown left ${pageDiff} changed pixels`);
+  console.log('PageUp/PageDown return to identical prompt pixels: PASS');
+  await point(700, 200);
+  await page.evaluate(() => window.emulator.bus.send('mouse-wheel', [1, 0]));
+  await pause(800);
+  await point(10, 10);
+  if (changedPixels(bottom, await bodyPixels()) < 100) throw Error('Mouse wheel did not scroll up');
+  await point(700, 200);
+  await page.evaluate(() => window.emulator.bus.send('mouse-wheel', [-1, 0]));
+  await pause(800);
+  await point(10, 10);
+  await grab('wheel-cycle');
+  const wheelDiff = changedPixels(bottom, await bodyPixels());
+  if (wheelDiff !== 0) throw Error(`Mouse wheel cycle left ${wheelDiff} changed pixels`);
+  console.log('Wheel up/down return to identical prompt pixels: PASS');
+  await command('echo after-scroll > /n/host/clip/seen');
+  await waitFile('clip/seen', 'after-scroll\n');
+  console.log('Shell still executes correctly after scrolling/deletion: PASS');
   const serial = await page.locator('#serial').textContent();
   if (/read fault fail|POOLABORT|panic:/.test(serial)) throw Error('Guest fault in serial output');
   if (errors.length) throw Error(errors.join('\n'));
   console.log('RIO-TITLEBARS PASS');
 } catch (e) {
   await grab('failed').catch(() => {});
-  console.log('serial:', await page.locator('#serial').textContent());
+  console.log('serial:', await page.locator('#serial').textContent({ timeout: 1000 }).catch(() => '(page unavailable)'));
   console.log('saved file:', await hostText('clip/title-source').catch(() => null));
   throw e;
 } finally {

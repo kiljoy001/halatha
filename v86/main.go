@@ -36,6 +36,17 @@ func main() {
 		}
 		delete(opts, "_diskboot")
 	}
+	// Multiboot path (e.g. Plan 9/Harvey): kernel from the namespace, root
+	// over the host 9P filesystem. Distinct from both the disk image and
+	// Linux bzImage paths.
+	mbBoot := false
+	if v, ok := opts["_mbboot"]; ok {
+		if b, _ := v.(bool); b {
+			mbBoot = true
+		}
+		delete(opts, "_mbboot")
+	}
+	unixBoot := !diskBoot && !mbBoot
 	webglScreen := false
 	if v, ok := opts["_webgl_screen"]; ok {
 		if b, _ := v.(bool); b {
@@ -64,7 +75,7 @@ func main() {
 			opts[k] = buf
 		}
 	}
-	resolveDisks("hda", "hdb", "fda", "fdb", "cdrom", "bios")
+	resolveDisks("hda", "hdb", "fda", "fdb", "cdrom", "bios", "multiboot", "initrd")
 
 	var (
 		pendingScreenPort js.Value
@@ -98,7 +109,7 @@ func main() {
 	// The Linux path loads a bzImage from the namespace; disk-boot guests
 	// (9front) carry their own kernel on the disk image and don't need one.
 	var bzImage js.Value
-	if !diskBoot {
+	if unixBoot {
 		bzImage, err = jsutil.AwaitErr(js.Global().Get("sys").Call("readFile", "boot/bzImage"))
 		if err != nil {
 			log.Fatal(err)
@@ -199,7 +210,7 @@ func main() {
 		"vga_bios":        bufObj(v86vgabios),
 		"disable_speaker": true,
 	}
-	if !diskBoot {
+	if unixBoot {
 		defaults["bzimage"] = bufObj(bzImage)
 		defaults["bzimage_initrd_from_filesystem"] = false
 		defaults["disable_mouse"] = true
@@ -215,7 +226,24 @@ func main() {
 		opts[k] = v
 	}
 
-	vm := jsmod.Get("V86").New(opts)
+	// Screen adapter. v86 2025+ takes the adapter up front (options
+	// screen_adapter) and pushes pixels through it; the canvas itself is
+	// transferred from the host <wanix-screen> later, so start with a
+	// placeholder and swap the canvas in when it arrives.
+	var vm js.Value
+	placeholderCanvas := js.Global().Get("OffscreenCanvas").New(720, 400)
+	screenAdapter := jsmod.Get("OffscreenScreenAdapter").New(placeholderCanvas, js.FuncOf(func(this js.Value, args []js.Value) any {
+		if !vm.IsUndefined() && !vm.IsNull() {
+			if display := vm.Get("v86").Get("cpu").Get("devices").Get("display"); !display.IsUndefined() && !display.IsNull() {
+				display.Call("request_frame")
+			}
+		}
+		return nil
+	}))
+	opts["screen_adapter"] = screenAdapter
+	opts["screen"] = map[string]any{"scale": 1}
+
+	vm = jsmod.Get("V86").New(opts)
 
 	// exportch carries the guest->host 9P export (Linux hostexport path only).
 	var exportch js.Value
@@ -229,15 +257,53 @@ func main() {
 		screenReady  bool
 	)
 	setupScreen := func(canvas js.Value) {
-		screenAdapter := jsmod.Get("OffscreenScreenAdapter").New(canvas, js.FuncOf(func(this js.Value, args []js.Value) any {
-			vm.Get("v86").Get("cpu").Get("devices").Get("vga").Call("screen_fill_buffer")
-			return nil
-		}))
-		vm.Get("v86").Get("cpu").Get("devices").Get("vga").Set("screen", screenAdapter)
+		screenAdapter.Call("set_canvas", canvas)
 		vm.Set("screen_adapter", screenAdapter)
 	}
 
-	if !diskBoot {
+	// Guest serial0 is the console: Harvey (multiboot) and the disk-booted
+	// 9front/9legacy guests both talk there. Mirror complete lines to the
+	// page console so a text log exists even when VGA is the only display.
+	// Use console.log directly: os.Stdout writes from a JS callback can block
+	// the single-threaded wasm runtime.
+	if !unixBoot {
+		console := js.Global().Get("console")
+		var serialLine []byte
+		vm.Call("add_listener", "serial0-output-byte", js.FuncOf(func(this js.Value, args []js.Value) any {
+			b := byte(args[0].Int())
+			if b == '\n' {
+				console.Call("log", string(serialLine))
+				serialLine = serialLine[:0]
+			} else {
+				serialLine = append(serialLine, b)
+			}
+			return nil
+		}))
+		for _, ev := range []string{"emulator-error", "emulator-stopped"} {
+			ev := ev
+			vm.Call("add_listener", ev, js.FuncOf(func(this js.Value, args []js.Value) any {
+				msg := ev
+				if len(args) > 0 && args[0].Truthy() {
+					if m := args[0].Get("message"); m.Truthy() {
+						msg += ": " + m.String()
+					}
+				}
+				console.Call("log", "[vm] "+msg)
+				return nil
+			}))
+		}
+		if mbBoot {
+			for _, ev := range []string{"emulator-ready", "emulator-loaded", "emulator-started"} {
+				ev := ev
+				vm.Call("add_listener", ev, js.FuncOf(func(this js.Value, args []js.Value) any {
+					console.Call("log", "[vm] "+ev)
+					return nil
+				}))
+			}
+		}
+	}
+
+	if unixBoot {
 		exportch = js.Global().Get("MessageChannel").New()
 		// Buffer 9p messages on virtio-console1 output and post complete messages to exportch.port1
 		var (
@@ -376,9 +442,9 @@ func main() {
 	}
 
 	vm.Call("add_listener", "emulator-ready", js.FuncOf(func(this js.Value, args []js.Value) any {
-		if !diskBoot {
+		if unixBoot {
 			vm.Get("bus").Call("send", "virtio-console0-resize", []any{100, 100})
-		} else {
+		} else if diskBoot {
 			vm.Call("serial_set_carrier_detect", "1", true)
 			vm.Call("serial_set_data_set_ready", "1", true)
 			vm.Call("serial_set_clear_to_send", "1", true)
@@ -391,7 +457,7 @@ func main() {
 		}
 		screenReady = true
 
-		if !diskBoot {
+		if unixBoot {
 			go sendStdin()
 			js.Global().Get("self").Call("postMessage", map[string]any{
 				"vm":     os.Getenv("vm"),

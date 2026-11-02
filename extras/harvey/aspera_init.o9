@@ -14,20 +14,23 @@ function raw_desktop() int64 {
            bind("#@", "/mnt/o9", MREPL|MCREATE) < 0){
             sysfatal("halatha: desktop namespace: %r");
         }
-        /* #9 (virtio-9p) is the /n/host browser gateway; / stays the guest root. */
+        /* The standalone browser also supplies the OS root. Export only its
+           services here; binding / would create /n/host/n/host/... cycles. */
         bind("#9", "/dev", MAFTER);
-        fd = open("#9/0", ORDWR);
-        if(fd >= 0){
-            if(mount(fd, -1, "/n/host", MREPL|MCREATE, "") >= 0)
-                print("halatha: mounted #9/0 at /n/host\n");
-            else
-                print("halatha: mount /n/host failed: %r\n");
-            close(fd);
-        } else if(bind("/", "/n/host", MREPL) >= 0) {
-            /* Root already attached via #9: bind it as the host gateway. */
-            print("halatha: bound / at /n/host\n");
-        } else {
-            print("halatha: /n/host unavailable: %r\n");
+        if(access("/clip", AEXIST) == 0){
+            if(bind("/clip", "/n/host/clip", MREPL|MCREATE) < 0)
+                sysfatal("halatha: clipboard namespace: %r");
+            if(bind("/lib/aspera/note.txt", "/n/host/note.txt", MREPL) < 0)
+                print("halatha: browser note unavailable: %r\n");
+            print("halatha: browser services at /n/host\n");
+        }else{
+            fd = open("#9/0", ORDWR);
+            if(fd >= 0){
+                if(mount(fd, -1, "/n/host", MREPL|MCREATE, "") < 0)
+                    print("halatha: mount /n/host failed: %r\n");
+                close(fd);
+            }else
+                print("halatha: /n/host unavailable: %r\n");
         }
         /* #~ (9ring) stays bound for high-speed display/input streaming. */
         bind("#~", "/dev", MAFTER);
@@ -56,9 +59,47 @@ function raw_desktop() int64 {
         if(value == nil || value[0] == 0)
             putenv("sysname", "aspera");
         free(value);
+        value = getenv("home");
+        if(value == nil || value[0] == 0)
+            putenv("home", "/");
+        free(value);
+        /* Mount before Rio starts; the child shares this namespace. */
+        {
+            char *targv[] = {"truetypefs", nil};
+            int pid = rfork(RFPROC|RFFDG);
+            if(pid == 0){
+                exec("/bin/truetypefs", targv);
+                _exits("truetypefs exec failed");
+            }
+            if(pid > 0){
+                Waitmsg *w = wait();
+                if(w != nil && w->msg[0] == 0)
+                    print("halatha: truetypefs mounted at /n/ttf\n");
+                else
+                    print("halatha: truetypefs failed: %s\n", w != nil ? w->msg : "wait failed");
+                free(w);
+            }
+        }
+        /* Share the mount and environment with Rio, not just its startup rc. */
+        {
+            char *pargv[] = {"plumber", "-p", "/lib/aspera/plumbing", nil};
+            int pid = rfork(RFPROC|RFFDG);
+            if(pid == 0){
+                exec("/bin/plumber", pargv);
+                _exits("plumber exec failed");
+            }
+            if(pid > 0){
+                Waitmsg *w = wait();
+                if(w != nil && w->msg[0] == 0)
+                    print("halatha: plumber ready\n");
+                else
+                    print("halatha: plumber failed: %s\n", w != nil ? w->msg : "wait failed");
+                free(w);
+            }
+        }
         print("halatha: starting Rio\n");
         {
-            int pid = rfork(RFPROC|RFFDG|RFENVG);
+            int pid = rfork(RFPROC|RFFDG);
             if(pid == 0){
                 exec("/bin/rio", rargv);
                 _exits("rio exec failed");

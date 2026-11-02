@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"os"
 	pathpkg "path"
 	"strings"
 	"sync"
@@ -490,12 +491,29 @@ func (s *srv) dirListing(dir string) ([]byte, error) {
 // handle shares data with the rest of the namespace. OpenContext ignores the
 // mode; Otrunc is applied separately.
 func (s *srv) openFile(p string, mode proto.Mode) (fs.File, error) {
-	if mode&proto.Otrunc != 0 {
-		if err := fs.Truncate(s.Fsys, p, 0); err != nil {
-			return nil, err
-		}
+	// 9P Topen carries the access mode; it must reach the underlying
+	// filesystem. Opening everything read-only made imported filesystems
+	// (and any writable mount) reject writes with "file not open for writing".
+	flag := os.O_RDONLY
+	switch {
+	case mode&proto.Ordwr != 0:
+		flag = os.O_RDWR
+	case mode&proto.Owrite != 0:
+		flag = os.O_WRONLY
 	}
-	f, err := fs.OpenContext(s.context(), s.Fsys, p)
+	if mode&proto.Otrunc != 0 {
+		flag |= os.O_TRUNC
+	}
+	var (
+		f   fs.File
+		err error
+	)
+	if flag == os.O_RDONLY {
+		// Keep cancellation-aware read opens on the OpenContext path.
+		f, err = fs.OpenContext(s.context(), s.Fsys, p)
+	} else {
+		f, err = fs.OpenFile(s.Fsys, p, flag, 0)
+	}
 	if err != nil {
 		return nil, err
 	}

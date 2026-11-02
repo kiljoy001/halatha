@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Harvey under &lt;wanix-vm&gt;</title>
+<style>
+html,body{margin:0;height:100%;background:#111;color:#ccc;font:13px ui-monospace,monospace}
+#ns{display:flex;flex-direction:column;height:100%}
+wanix-vm{flex:1;min-height:0;background:#000}
+</style>
+</head>
+<body>
+<!--
+  Harvey is a 32-bit multiboot entry stub that switches to long mode, so it
+  needs v86's x86_64 CPU profile plus multiboot loading and a handle9p root.
+  This page drives it through the same <wanix-vm> element used for the
+  hda-booted 9front/9legacy guests:
+
+      multiboot=...  kernel image from the namespace
+      cpu=x86_64     long mode
+      append=...     multiboot command line
+      acpi           required by the amd64 kernel
+      screen start   VGA canvas + input
+      <wanix-bind dst="."> the staged root filesystem (union, read/write memfs)
+
+  The guest's 9P root is the task namespace served by worker.p9, so the
+  rootfs bind is what the kernel mounts at /.
+
+  Build: (cd v86 && make) && make js && python3 extras/harvey/build_aspera.py
+  The last step writes local/aspera/rootfs.tar.gz for the bind below.
+  Disk images and archives need an HTTP server that supports Range requests.
+-->
+<wanix-namespace id="ns">
+  <wanix-bind dst="." src="../local/aspera/rootfs.tar.gz?v=harvey1" type="archive"></wanix-bind>
+  <wanix-bind dst="#vm/v86" src="../v86/v86.tgz?v=v64-1" type="archive"></wanix-bind>
+  <wanix-vm id="harvey"
+      multiboot="../local/aspera/harvey.32bit"
+      cpu="x86_64"
+      acpi
+      mem="512M"
+      screen start
+      append="bootargs=local!#9/0 nobootprompt=local"
+      style="width:100%;height:100%"></wanix-vm>
+</wanix-namespace>
+<script type="module" src="../dist/wanix.js"></script>
+</body>
+</html>
