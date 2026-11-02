@@ -122,10 +122,15 @@ so `csquery /net/cs 'tcp!example.com!80'` can be typed directly.
 ./halavps -addr 127.0.0.1:8099
 ```
 
-The page `examples/basic-vm-harvey-vps.html` imports
-`ws://127.0.0.1:8099/session` into the VM task namespace, preloads the GEFS
-image and kernel, and passes them to v86 as blob URLs. Use `-token` and WSS
-in production.
+The page `examples/basic-vm-harvey-vps.html` needs nothing from this server
+except the static images: it preloads the GEFS image and kernel, and the VM's
+namespace is the Wanix task namespace with browser ramfs bound at `ram/` and
+`host/`. The Wisp relay at `/net` takes no token: it is stateless and
+normally runs next to the browser. `?relay=wisp://host:port/net` overrides
+the relay endpoint.
+
+`/session` still serves a token-gated 9P session for pages that want a
+server-supplied namespace, but the Harvey page no longer uses it.
 
 ## Browser services
 
@@ -147,7 +152,8 @@ gesture; the guest keypress that writes the control file supplies it.
 ## Network relay
 
 The guest's virtio NIC carries Ethernet frames through v86's Wisp adapter;
-`halavps` only proxies the TCP streams (`/net`). A loopback listener
+`halavps` only proxies the TCP streams (`/net`) and needs no session token.
+A loopback listener
 (`-addr 127.0.0.1:...`, the normal deployment behind Caddy) proxies any
 public unicast address, so the guest can reach the internet. A relay bound to
 a non-loopback address keeps the private-range default.

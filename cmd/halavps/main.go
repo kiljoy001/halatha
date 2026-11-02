@@ -116,10 +116,10 @@ func (s *server) sessionHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) netHandler(w http.ResponseWriter, r *http.Request) {
-	if !s.tokens.consume(r.URL.Query().Get("token")) {
-		http.Error(w, "invalid or expired session token", http.StatusForbidden)
-		return
-	}
+	// The Wisp relay is stateless and carries no session data. It is meant
+	// to run next to the browser (or on a trusted host), so it takes no
+	// token: the guest's TCP traffic is already limited by the relay's
+	// destination policy.
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return

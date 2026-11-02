@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Harvey VPS session</title>
+<title>Harvey desktop</title>
 <style>
 html,body{margin:0;height:100%;background:#111;color:#ccc;font:13px ui-monospace,monospace}
 wanix-vm{display:block;width:100vw;height:100vh;background:#000}
@@ -12,7 +12,7 @@ wanix-vm{display:block;width:100vw;height:100vh;background:#000}
 </head>
 <body>
 <!--
-  Harvey boots from an immutable GEFS image plus a VPS session namespace:
+  Harvey boots from an immutable GEFS image plus a browser-local namespace:
 
       initrd      GEFS image, loaded by v86 as a multiboot module. The guest
                   maps it writable, so GEFS writes stay in RAM and the image
@@ -21,9 +21,9 @@ wanix-vm{display:block;width:100vw;height:100vh;background:#000}
       host/       browser-local service tree (clip, uploads, downloads, usb)
 
   The kernel boots with gefsroot=1, runs the embedded /boot/gefsinit, starts
-  GEFS on /dev/initrd, pivots / to it, mounts the session at /vps, and binds
-  ram/ over the writable branches. The guest keeps no state on the server;
-  files leave through the browser's save picker/download or WebUSB.
+  GEFS on /dev/initrd, pivots / to it, mounts the task namespace at /vps, and
+  binds ram/ over the writable branches. The guest keeps no state on the
+  server; files leave through the browser's save picker/download or WebUSB.
 
   The images are fetched here, on the page thread, and handed to v86 as blob
   URLs. v86's own loader reads module images with an XHR inside the worker
@@ -31,10 +31,12 @@ wanix-vm{display:block;width:100vw;height:100vh;background:#000}
   ~10 s to several minutes. A blob URL is already in browser memory, so the
   worker only copies it into guest RAM.
 
-  A fresh single-use token is issued per page load; the WebSocket consumes it.
+  The server is only an image host: the guest namespace is the Wanix task
+  namespace with browser ramfs bound at ram/ and host/. No session token or
+  server-side data plane is involved.
 -->
 <div id="app"></div>
-<div id="status">Opening session…</div>
+<div id="status">Loading the desktop…</div>
 <script type="module">
 const statusEl = document.querySelector("#status");
 const setStatus = (text, isError = false) => {
@@ -43,15 +45,14 @@ const setStatus = (text, isError = false) => {
 };
 const deployed = location.pathname === "/" || location.pathname === "/index.html";
 const assetBase = deployed ? "/vps-test/" : "../";
-const tokenURL = deployed ? "/vps-token" : "http://127.0.0.1:8099/token";
-const wsBase = deployed
-  ? `wss://${location.host}/vps-session`
-  : "ws://127.0.0.1:8099/session";
 // v86 selects its Wisp adapter from the wisps:// (or wisp://) scheme;
-// passing wss:// here silently selects a different backend.
-const netBase = deployed
+// passing wss:// here silently selects a different backend. The relay is
+// stateless and tokenless and is expected to run next to the browser; a
+// ?relay= override points the page at a local one.
+const relayOverride = new URLSearchParams(location.search).get("relay");
+const netBase = relayOverride || (deployed
   ? `wisps://${location.host}/vps-net`
-  : "wisp://127.0.0.1:8099/net";
+  : "wisp://127.0.0.1:8099/net");
 
 // Bump when the image changes. The server marks these immutable so a reload
 // reads them from the browser cache instead of the WAN.
@@ -59,24 +60,6 @@ const IMAGE_VERSION = "20261101-2";
 const KERNEL_VERSION = "20261101-1";
 const gefsPath = `local/aspera/aspera-vps.gefs?v=${IMAGE_VERSION}`;
 const kernelPath = `local/aspera/harvey-vps.32bit?v=${KERNEL_VERSION}`;
-
-let token, netToken;
-try {
-  // One single-use token per channel: 9P for the namespace, one for the
-  // Wisp TCP relay. Neither can be replayed.
-  const [sessionResp, netResp] = await Promise.all([
-    fetch(tokenURL, { cache: "no-store" }),
-    fetch(tokenURL, { cache: "no-store" }),
-  ]);
-  if (!sessionResp.ok || !netResp.ok) {
-    throw new Error(`token request: HTTP ${sessionResp.status}/${netResp.status}`);
-  }
-  token = (await sessionResp.json()).token;
-  netToken = (await netResp.json()).token;
-} catch (err) {
-  setStatus(`Could not open a VPS session: ${err.message || err}`, true);
-  throw err;
-}
 
 // Fetch an image with progress and turn it into a blob URL for v86.
 async function preload(path, label) {
@@ -108,7 +91,7 @@ async function preload(path, label) {
   return url;
 }
 
-setStatus("Session granted; loading the desktop…");
+setStatus("Loading the desktop…");
 let initrdURL = `${assetBase}${gefsPath}`;
 let kernelURL = `${assetBase}${kernelPath}`;
 try {
@@ -131,14 +114,12 @@ document.querySelector("#app").innerHTML = `
       netdev="virtio"
       mem="1G"
       screen start
-      relay="${netBase}?token=${encodeURIComponent(netToken)}"
+      relay="${netBase}"
       append="bootargs=local!#9/0 nobootprompt=local gefsroot=1"
       style="width:100%;height:100%">
-    <wanix-bind dst="." type="import" transport="websocket" protocol="9P2000"
-        src="${wsBase}?token=${encodeURIComponent(token)}"></wanix-bind>
-    <!-- The writable data plane is browser memory. The server only supplies
-         the clean session root; these local ramfs binds shadow its ram/ and
-         host/ mount points. -->
+    <!-- Everything the guest writes lives in browser memory; the server is
+         only the image host. The guest mounts this task namespace at /vps
+         and binds ram/ and host/ into /home, /tmp, /var and /n/host. -->
     <wanix-bind dst="ram" src="#ramfs/new"></wanix-bind>
     <wanix-bind dst="host" src="#ramfs/new"></wanix-bind>
   </wanix-vm>
