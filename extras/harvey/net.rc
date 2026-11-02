@@ -1,0 +1,24 @@
+#!/bin/rc
+# Bring up the browser Wisp link.  vps_init has already bound #I (IP) and
+# #l (ethernet) under /net; this runs DHCP, then the resolver and the
+# connection server.  Everything is best-effort: a failed lease must not
+# stop the desktop.
+echo 'net: starting'
+
+if(! test -e /net/ether0){
+	echo 'net: no ethernet device'
+	exit 'no ethernet'
+}
+
+ipconfig
+echo 'net: ipconfig' $status
+
+if(! test -e /net/ipifc/0/local){
+	echo 'net: no address'
+	exit 'no address'
+}
+
+dns -r &
+sleep 2
+cs &
+echo 'net: resolver and cs running'

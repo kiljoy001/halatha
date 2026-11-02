@@ -158,12 +158,14 @@ def main():
     # Rio's window filesystem needs a scratch mount point (cexecpipe binds
     # #| at /mnt/temp) and a wsys mount point. The standalone page created
     # these in its in-memory VFS; the archive rootfs must carry them too.
-    for d in ("mnt/temp", "mnt/wsys", "mnt/plumb", "n/host/clip"):
+    for d in ("mnt/temp", "mnt/wsys", "mnt/plumb", "n/host/clip", "net"):
         (root / d).mkdir(parents=True, exist_ok=True)
     (root / "rc/lib").mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "rc/lib/rcmain", root / "rc/lib/rcmain")
     (root / "lib/aspera").mkdir(parents=True, exist_ok=True)
     shutil.copy2(here / "rio-start.rc", root / "lib/aspera/start.rc")
+    shutil.copy2(here / "net.rc", root / "lib/aspera/net.rc")
+    (root / "lib/aspera/net.rc").chmod(0o755)
     shutil.copy2(here / "plumbing", root / "lib/aspera/plumbing")
     (root / "n/host/note.txt").touch()
     (root / "lib/ndb").mkdir(parents=True, exist_ok=True)

@@ -91,6 +91,31 @@ make wasm-go              # Wanix kernel; or make wasm with tinygo
 go build ./cmd/halavps
 ```
 
+## Local boot test (no browser)
+
+The VPS guest boots from a multiboot initrd module, so 9vm can run the same
+kernel and image without a browser. Build a throwaway session directory that
+looks like the halavps namespace:
+
+```sh
+mkdir -p /tmp/vpssess/ram/{home,tmp,var,n/host}
+mkdir -p /tmp/vpssess/host/{clip,downloads,fetch,net,uploads,usb,app}
+cp build/aspera-vps.gefs /tmp/vpssess/base.gefs
+```
+
+Then boot with a tap and a DHCP server:
+
+```sh
+unshare -Urn -- ./util/9vm/9vm -m 1024 -r /tmp/vpssess \
+    -initrd build/aspera-vps.gefs -net-tap tap0 \
+    -c 'bootargs=local!#9/0 nobootprompt=local gefsroot=1' \
+    build/harvey-vps.32bit
+```
+
+`vps_init` runs `net.rc`, which leases an address with `ipconfig` and starts
+`dns` and `cs`. The console falls back to `rc -i` when there is no framebuffer,
+so `csquery /net/cs 'tcp!example.com!80'` can be typed directly.
+
 ## Run
 
 ```sh

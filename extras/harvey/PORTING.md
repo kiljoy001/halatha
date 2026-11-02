@@ -120,7 +120,7 @@ be a native build, needs APEX, or needs a namespace/9P bridge.
 | `csquery` | `sys/src/cmd/ndb/csquery.c` | libndb | built | `build/aspera-csquery` |
 | `dnsquery` | `sys/src/cmd/ndb/dnsquery.c` | libndb, libip | built | `build/aspera-dnsquery` |
 | `ipquery` | `sys/src/cmd/ndb/ipquery.c` | libndb, libip | built | `build/aspera-ipquery` |
-| `dial` | 9front `sys/src/cmd/dial.c` | libip, libndb | port needed | not in the Harvey tree |
+| `dial` | `sys/src/libc/9sys/dial.c` | libip, libndb | built | in libc; used by the guest tcp test |
 | `ipconfig` | `sys/src/cmd/ip/ipconfig/ipconfig.json` | libip, libndb | built | `build/aspera-ipconfig`; runtime needs the packet link |
 | `ping` | `sys/src/cmd/ip/ping.c` | libip | built | `build/aspera-ping`; first end-to-end link test |
 | `webfs` | 9front `sys/src/cmd/webfs` | lib9p, libbio, libsec | later | not in the Harvey tree; HTTP/HTTPS client filesystem |
@@ -132,12 +132,17 @@ be a native build, needs APEX, or needs a namespace/9P bridge.
 | `exportfs` | Harvey/9front `sys/src/cmd/exportfs` | lib9p, libauth | later | only if exporting namespaces |
 
 `lib/ndb/local` is staged in `local/aspera/rootfs/lib/ndb/local` and copied by
-`build_aspera.py`. The GEFS image has not yet been rebuilt with the ndb/net
-binaries; they are currently hot-loadable from `/n/host/app`.
+`build_aspera.py`. The net binaries are in the GEFS image. `vps_init` binds
+`#I` and `#l` under `/net`, then runs `/lib/aspera/net.rc`, which does DHCP,
+starts the resolver and the connection server.
+
+The browser link is the v86 virtio-net adapter with a Wisp TCP relay
+(`netdev="virtio"`). DHCP, DNS, `cs` and TCP were verified under 9vm against
+the same kernel and image (`util/9vm/9vm -initrd build/aspera-vps.gefs ...`);
+9vm now loads a multiboot initrd so the real VPS boot path runs locally.
 
 ## Known Harvey/9front deltas
 
-- `libip.a` is not built for userspace; `ipconfig` and `ping` cannot link yet.
 - `libndb.a`, `libauth.a`, `libsec.a`, `lib9p.a`, `libbio.a`, `libthread.a`
   already build.
 - `libbio` gained `Blethal`/`Biofn`/`Berror` and the `errorf`/`iof`/`aux`
