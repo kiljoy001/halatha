@@ -76,7 +76,7 @@ async function preload(path, label) {
       chunks.push(value);
       loaded += value.byteLength;
       if (total) {
-        setStatus(`Loading ${label}… ${Math.round(100 * loaded / total)}%`);
+        setStatus(`Loading ${label}… ${Math.min(100, Math.round(100 * loaded / total))}%`);
       }
     }
   } else {

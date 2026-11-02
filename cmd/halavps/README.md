@@ -162,6 +162,20 @@ a non-loopback address keeps the private-range default.
 relay to those networks, and `any` allows everything. Loopback, link-local
 and the cloud metadata address are always refused.
 
+## Guest images
+
+The images are mostly zeroes (256 MiB compresses to ~8 MiB with zstd). Caddy
+serves `/vps-test/local/aspera/*` from disk with `file_server
+precompressed zstd gzip`, so keep sidecars next to every image:
+
+```sh
+zstd -19 -f -o aspera-vps.gefs.zst aspera-vps.gefs
+gzip -9 -c aspera-vps.gefs > aspera-vps.gefs.gz
+```
+
+Refresh them whenever a new image is deployed; otherwise Caddy falls back to
+the uncompressed file.
+
 ## Notes
 
 - The GEFS image should be 160 MiB or larger. The page uses `mem="1G"` so the
