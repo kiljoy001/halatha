@@ -50,6 +50,7 @@ def main():
             (here / "aspera_init.o9", "boot/boot"),
             (source_dir / "shelf_service.o9", "bin/aspera-shelf-service"),
             (source_dir / "welcome.o9", "bin/welcome"),
+            (source_dir / "shelf_dock.o9", "bin/shelf"),
         ):
             generated, obj = Path(tmp) / "guest.c", Path(tmp) / "guest.o"
             target = root / destination
@@ -57,14 +58,14 @@ def main():
             with generated.open("w") as output:
                 subprocess.run([prism.O9C_BIN, str(source)], stdout=output, check=True)
             text = generated_source(generated.read_text())
-            if source.name == 'welcome.o9':
+            if source.name in ('welcome.o9', 'shelf_dock.o9'):
                 text = text.replace('#include <o9.h>', '#include <o9.h>\n#include <draw.h>\n#include <event.h>', 1)
             generated.write_text(text)
             shutil.copy2(generated, out / ('generated-' + source.stem + '.c'))
             subprocess.run([prism.CC, *prism.CFLAGS, '-include', str(here / 'aspera_exec.h'), f"-I{source.parent}",
                             str(generated), "-o", str(obj)], check=True)
             libs = [lib for lib in prism.LIBS if Path(lib).is_file()]
-            extra = [str(welcome_resize_obj)] if source.name == 'welcome.o9' else []
+            extra = [str(welcome_resize_obj)] if source.name in ('welcome.o9', 'shelf_dock.o9') else []
             subprocess.run([prism.LD, *prism.LDFLAGS, str(obj), str(runtime_obj),
                             str(exec_obj), *extra, *libs,
                             "-o", str(target)], check=True)
@@ -97,6 +98,7 @@ def main():
         # Stage Objective-9c sample sources into guest rootfs
         (root / "sys/src").mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_dir / "welcome.o9", root / "sys/src/welcome.o9")
+        shutil.copy2(source_dir / "shelf_dock.o9", root / "sys/src/shelf_dock.o9")
         (root / "home").mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_dir / "welcome.o9", root / "home/welcome.o9")
 

@@ -1,6 +1,8 @@
 #!/bin/rc
-# Rio startup (genuine plan9front Rio): welcome tour + rc shell + snarf bridge.
+# Rio startup: Aspera shelf dock + welcome tour + rc shell + snarf bridge.
 # Rio -i runs this script windowless; the wctl window is the shell.
-echo 'new -r 40 40 500 320 rc -c ''welcome; exec rc''' > /dev/wctl
-echo 'new -r 520 40 980 320 rc' > /dev/wctl
+echo 'new -r 0 0 1024 34 shelf' > /dev/wctl
+echo 'new -r 40 44 500 330 rc -c ''welcome; exec rc''' > /dev/wctl
+echo 'new -r 520 44 980 330 rc' > /dev/wctl
+aspera-shelf-service &
 snarfbridge &
