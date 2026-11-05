@@ -7,6 +7,9 @@ namespace runtime (the `<wanix-namespace>` HTML elements, Wasm/JavaScript
 tasks, and v86 virtualization) and builds on it a deep, native
 Plan 9 / 9legacy guest integration that stock Wanix does not have.
 
+**See it live:** the [Objective-9c playground](https://halatha.rentonsoftworks.com)
+runs on Halatha in your browser, with nothing to install.
+
 ## How Halatha differs from stock Wanix
 
 Stock Wanix boots Linux in v86 and bridges the guest to the host over a
